@@ -51,7 +51,7 @@ export default function ModelInfo() {
         <div>
           <span className="pageKicker"><RefreshCw size={15} /> Model Center</span>
           <h1>模型中心</h1>
-          <p>查看模型精度、训练数据规模和评估方式；教师端可直接调整参数并重新训练。</p>
+          <p>查看完整寿命曲线训练后的早期预测精度；教师端可调整参数并重新训练。</p>
         </div>
         <div className="heroStats">
           <div><strong>{models.length}</strong><span>已训练模型</span></div>
@@ -62,12 +62,12 @@ export default function ModelInfo() {
 
       {isTeacher && (
         <Card title="训练参数编辑" className="controlPanel">
-          <Form layout="inline" initialValues={{ model_key: "xgboost", n_estimators: 80, max_depth: 2, learning_rate: 0.05, training_observation_fraction: 0.6 }} onFinish={train}>
+          <Form layout="inline" initialValues={{ model_key: "xgboost", n_estimators: 80, max_depth: 2, learning_rate: 0.05, training_observation_fraction: 0.1 }} onFinish={train}>
             <Form.Item label="模型" name="model_key"><Select style={{ width: 210 }} options={modelOptions} /></Form.Item>
             <Form.Item label="树数量" name="n_estimators"><InputNumber min={20} max={500} /></Form.Item>
             <Form.Item label="最大深度" name="max_depth"><InputNumber min={2} max={10} /></Form.Item>
             <Form.Item label="学习率" name="learning_rate"><InputNumber min={0.001} max={0.5} step={0.001} /></Form.Item>
-            <Form.Item label="观测窗口" name="training_observation_fraction"><InputNumber min={0.1} max={1} step={0.1} /></Form.Item>
+            <Form.Item label="评估前缀" name="training_observation_fraction"><InputNumber min={0.05} max={0.5} step={0.05} /></Form.Item>
             <Button type="primary" htmlType="submit" icon={<RefreshCw size={16} />} loading={loading}>重新训练</Button>
           </Form>
         </Card>
@@ -107,7 +107,7 @@ export default function ModelInfo() {
                 <Descriptions bordered column={1}>
                   <Descriptions.Item label="训练样本">{info.training_data_size} 条电池记录</Descriptions.Item>
                   <Descriptions.Item label="样本筛选">{info.metrics?.["训练样本筛选"] || "未记录"}</Descriptions.Item>
-                  <Descriptions.Item label="观测窗口">{info.metrics?.["观测窗口"] || "未记录"}</Descriptions.Item>
+                  <Descriptions.Item label="早期预测窗口">{info.metrics?.["观测窗口"] || "未记录"}</Descriptions.Item>
                   <Descriptions.Item label="样本统计">
                     <Space>
                       <Tag>候选 {info.metrics?.["候选样本"] ?? info.training_data_size}</Tag>

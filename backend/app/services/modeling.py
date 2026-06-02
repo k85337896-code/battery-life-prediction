@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import LeaveOneOut, train_test_split
+from sklearn.model_selection import LeaveOneGroupOut, train_test_split
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
 from sklearn.neural_network import MLPRegressor
@@ -22,7 +22,8 @@ DEFAULT_PARAMS = {
     "subsample": 0.9,
     "random_state": 42,
 }
-DEFAULT_TRAINING_OBSERVATION_FRACTION = 0.6
+PREFIX_FRACTIONS = (0.05, 0.1, 0.15, 0.2, 0.3)
+DEFAULT_EVAL_PREFIX_FRACTION = 0.1
 
 MODEL_DEFAULTS = {
     "xgboost": DEFAULT_PARAMS,
@@ -65,8 +66,8 @@ def train_model(params=None, model_key="xgboost"):
         raise ValueError("不支持的模型类型。")
     clean_params = {}
     raw_params = params or {}
-    training_observation_fraction = float(raw_params.get("training_observation_fraction", DEFAULT_TRAINING_OBSERVATION_FRACTION))
-    training_observation_fraction = min(max(training_observation_fraction, 0.1), 1.0)
+    eval_prefix_fraction = float(raw_params.get("training_observation_fraction", DEFAULT_EVAL_PREFIX_FRACTION))
+    eval_prefix_fraction = min(max(eval_prefix_fraction, 0.05), 0.5)
     for key, value in raw_params.items():
         key = PARAM_ALIASES.get(key, key)
         if value not in (None, "") and key in MODEL_PARAM_KEYS[model_key]:
@@ -95,37 +96,55 @@ def train_model(params=None, model_key="xgboost"):
     )
     x = []
     y = []
+    groups = []
     for item in records:
-        train_points = max(8, int(len(item["capacity_curve"]) * training_observation_fraction))
-        features = extract_features(
-            item["battery_type"],
-            item["theoretical_capacity"],
-            item["rated_capacity"],
-            item["c_rate"],
-            item["capacity_curve"][: min(train_points, len(item["capacity_curve"]))],
-        )
-        x.append([features[name] for name in feature_names])
-        y.append(item["cycle_life"])
+        group_id = item.get("cell_name") or str(item["id"])
+        for fraction in PREFIX_FRACTIONS:
+            prefix_points = max(8, int(len(item["capacity_curve"]) * fraction))
+            features = extract_features(
+                item["battery_type"],
+                item["theoretical_capacity"],
+                item["rated_capacity"],
+                item["c_rate"],
+                item["capacity_curve"][: min(prefix_points, len(item["capacity_curve"]))],
+            )
+            x.append([features[name] for name in feature_names])
+            y.append(item["cycle_life"])
+            groups.append(group_id)
 
     import joblib
 
     x_array = np.array(x, dtype=float)
     y_array = np.array(y, dtype=float)
+    groups_array = np.array(groups)
     model = _build_model(model_key, params)
-    # 真实数据集只有几十块电池，随机切分会让评估非常不稳定；这里使用留一交叉验证更适合小样本答辩展示。
+    # 用完整寿命曲线生成多个早期前缀训练样本；评估时按电池留一，避免同一电池前缀泄漏。
     if len(records) <= 40:
         predictions = []
-        for train_index, test_index in LeaveOneOut().split(x_array):
+        eval_y_values = []
+        for train_index, test_index in LeaveOneGroupOut().split(x_array, y_array, groups_array):
             fold_model = _build_model(model_key, params)
             fold_model.fit(x_array[train_index], y_array[train_index])
-            predictions.append(float(fold_model.predict(x_array[test_index])[0]))
+            group = groups_array[test_index][0]
+            eval_candidates = [
+                index
+                for index in test_index
+                if group == groups_array[index]
+                and abs(PREFIX_FRACTIONS[index % len(PREFIX_FRACTIONS)] - eval_prefix_fraction) < 1e-9
+            ]
+            eval_index = eval_candidates[0] if eval_candidates else test_index[0]
+            predictions.append(float(fold_model.predict(x_array[[eval_index]])[0]))
+            eval_y_values.append(float(y_array[eval_index]))
         pred = np.array(predictions)
-        eval_y = y_array
+        eval_y = np.array(eval_y_values)
     else:
-        x_train, x_test, y_train, y_test = train_test_split(x_array, y_array, test_size=0.25, random_state=42)
-        model.fit(x_train, y_train)
-        pred = model.predict(x_test)
-        eval_y = y_test
+        record_groups = np.array([item.get("cell_name") or str(item["id"]) for item in records])
+        train_groups, test_groups = train_test_split(record_groups, test_size=0.25, random_state=42)
+        train_mask = np.isin(groups_array, train_groups)
+        test_mask = np.isin(groups_array, test_groups)
+        model.fit(x_array[train_mask], y_array[train_mask])
+        pred = model.predict(x_array[test_mask])
+        eval_y = y_array[test_mask]
     model.fit(x_array, y_array)
     metrics = {
         "RMSE": round(float(np.sqrt(mean_squared_error(eval_y, pred))), 3),
@@ -134,11 +153,21 @@ def train_model(params=None, model_key="xgboost"):
         "评估方式": "留一交叉验证" if len(records) <= 40 else "随机测试集",
         "候选样本": len(all_rows),
         "可靠EOL样本": len(records),
+        "前缀训练样本": len(x_array),
         "排除样本": max(len(all_rows) - len(records), 0),
-        "训练样本筛选": "仅使用连续达到 80% SOH 的可靠寿命标签",
-        "观测窗口": f"每条曲线前 {int(training_observation_fraction * 100)}%",
+        "训练样本筛选": "完整寿命曲线生成早期前缀样本，仅使用可靠 EOL 标签",
+        "观测窗口": f"训练前缀 5%-30%，留一评估使用前 {int(eval_prefix_fraction * 100)}%",
     }
-    joblib.dump({"model": model, "feature_names": feature_names, "model_key": model_key}, model_path(model_key))
+    joblib.dump(
+        {
+            "model": model,
+            "feature_names": feature_names,
+            "model_key": model_key,
+            "training_mode": "full_curve_prefix_transfer",
+            "prefix_fractions": PREFIX_FRACTIONS,
+        },
+        model_path(model_key),
+    )
 
     with get_db() as conn:
         conn.execute(
