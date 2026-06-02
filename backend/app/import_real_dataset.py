@@ -77,7 +77,8 @@ def _curve_from_excel(path: Path):
     if not capacity_col:
         raise ValueError(f"{path.name} 未找到 capacity_mAh/capacity_Ah 列。")
 
-    df = pd.read_excel(path, sheet_name="all_data", usecols=["cycle", "phase", capacity_col], engine="openpyxl")
+    optional_cols = [col for col in ("voltage_V", "current_mA", "temperature_C", "internal_resistance_mOhm") if col in header]
+    df = pd.read_excel(path, sheet_name="all_data", usecols=["cycle", "phase", capacity_col, *optional_cols], engine="openpyxl")
     df = df.rename(columns={capacity_col: "capacity"})
     if capacity_col == "capacity_Ah":
         df["capacity"] = pd.to_numeric(df["capacity"], errors="coerce") * 1000
@@ -85,13 +86,24 @@ def _curve_from_excel(path: Path):
     df = df.dropna(subset=["cycle", "phase", "capacity"])
     df["cycle"] = pd.to_numeric(df["cycle"], errors="coerce")
     df["capacity"] = pd.to_numeric(df["capacity"], errors="coerce")
+    for col in optional_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=["cycle", "capacity"])
 
     discharge = df[df["phase"].astype(str).str.lower().str.contains("discharge")]
     if discharge.empty:
         discharge = df
 
-    grouped = discharge.groupby("cycle", as_index=False)["capacity"].max().sort_values("cycle")
+    aggregations = {"capacity": "max"}
+    if "voltage_V" in optional_cols:
+        aggregations["voltage_V"] = "mean"
+    if "current_mA" in optional_cols:
+        aggregations["current_mA"] = "mean"
+    if "temperature_C" in optional_cols:
+        aggregations["temperature_C"] = "mean"
+    if "internal_resistance_mOhm" in optional_cols:
+        aggregations["internal_resistance_mOhm"] = "mean"
+    grouped = discharge.groupby("cycle", as_index=False).agg(aggregations).sort_values("cycle")
     grouped = grouped[grouped["capacity"] > 0]
     if len(grouped) < 8:
         raise ValueError(f"{path.name} 有效循环点不足，无法导入。")
@@ -100,14 +112,51 @@ def _curve_from_excel(path: Path):
     curve = []
     for _, row in grouped.iterrows():
         capacity = float(row["capacity"])
-        curve.append(
+        point = {
+            "cycle": int(row["cycle"]),
+            "specific_capacity": round(capacity, 6),
+            "soh": round(capacity / baseline * 100, 4),
+        }
+        if "voltage_V" in optional_cols and pd.notna(row.get("voltage_V")):
+            point["voltage_V"] = round(float(row["voltage_V"]), 6)
+        if "current_mA" in optional_cols and pd.notna(row.get("current_mA")):
+            point["current_mA"] = round(float(row["current_mA"]), 6)
+        if "temperature_C" in optional_cols and pd.notna(row.get("temperature_C")):
+            point["temperature_C"] = round(float(row["temperature_C"]), 6)
+        if "internal_resistance_mOhm" in optional_cols and pd.notna(row.get("internal_resistance_mOhm")):
+            point["internal_resistance_mOhm"] = round(float(row["internal_resistance_mOhm"]), 6)
+        curve.append(point)
+    return curve, baseline, _extra_features(curve, optional_cols)
+
+
+def _extra_features(curve: list[dict], optional_cols: list[str]):
+    def values(key):
+        return [float(point[key]) for point in curve if key in point]
+
+    early_count = max(8, int(len(curve) * 0.1))
+    early = curve[:early_count]
+    features = {
+        "has_voltage": "voltage_V" in optional_cols,
+        "has_current": "current_mA" in optional_cols,
+        "has_temperature": "temperature_C" in optional_cols,
+        "has_internal_resistance": "internal_resistance_mOhm" in optional_cols,
+    }
+    voltage = values("voltage_V")
+    early_voltage = [float(point["voltage_V"]) for point in early if "voltage_V" in point]
+    if voltage:
+        features.update(
             {
-                "cycle": int(row["cycle"]),
-                "specific_capacity": round(capacity, 6),
-                "soh": round(capacity / baseline * 100, 4),
+                "voltage_mean": round(sum(voltage) / len(voltage), 6),
+                "voltage_min": round(min(voltage), 6),
+                "voltage_max": round(max(voltage), 6),
+                "early_voltage_plateau": round(sum(early_voltage) / len(early_voltage), 6) if early_voltage else None,
+                "early_voltage_slope": round((early_voltage[-1] - early_voltage[0]) / max(early[-1]["cycle"] - early[0]["cycle"], 1), 8) if len(early_voltage) >= 2 else None,
             }
         )
-    return curve, baseline
+    current = values("current_mA")
+    if current:
+        features.update({"current_mean_abs": round(sum(abs(value) for value in current) / len(current), 6)})
+    return features
 
 
 def import_real_dataset(dataset_dir: Path = DATASET_DIR, train: bool = True):
@@ -124,7 +173,7 @@ def import_real_dataset(dataset_dir: Path = DATASET_DIR, train: bool = True):
 
     for path in files:
         group, cell_no = _file_meta(path)
-        curve, baseline_capacity = _curve_from_excel(path)
+        curve, baseline_capacity, extra_features = _curve_from_excel(path)
         eol_point = _find_sustained_eol(curve)
         label_status, training_eligible, flags = _quality_summary(curve, eol_point)
         cycle_life = int(eol_point["cycle"] if eol_point else curve[-1]["cycle"])
@@ -135,8 +184,8 @@ def import_real_dataset(dataset_dir: Path = DATASET_DIR, train: bool = True):
                     battery_type, theoretical_capacity, rated_capacity, c_rate,
                     cycle_life, current_soh, capacity_curve, source, note, created_at,
                     chemistry, dataset_name, cell_name, label_status,
-                    training_eligible, quality_flags, capacity_baseline
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    training_eligible, quality_flags, capacity_baseline, additional_features
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     group,
@@ -156,6 +205,7 @@ def import_real_dataset(dataset_dir: Path = DATASET_DIR, train: bool = True):
                     training_eligible,
                     json.dumps(flags, ensure_ascii=False),
                     round(baseline_capacity, 6),
+                    json.dumps(extra_features, ensure_ascii=False),
                 ),
             )
         imported.append(

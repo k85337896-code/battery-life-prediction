@@ -24,12 +24,13 @@ DEFAULT_PARAMS = {
 }
 PREFIX_FRACTIONS = (0.05, 0.1, 0.15, 0.2, 0.3)
 DEFAULT_EVAL_PREFIX_FRACTION = 0.1
+EVAL_PREFIX_FRACTIONS = (0.1, 0.2, 0.3)
 
 MODEL_DEFAULTS = {
     "xgboost": DEFAULT_PARAMS,
-    "lstm": {"hidden_layer_sizes": (96, 64, 32), "learning_rate_init": 0.006, "max_iter": 2000, "random_state": 42},
-    "tcn": {"hidden_layer_sizes": (128, 64, 32), "learning_rate_init": 0.006, "max_iter": 2000, "random_state": 42},
-    "cnn": {"hidden_layer_sizes": (96, 48), "learning_rate_init": 0.008, "max_iter": 1800, "random_state": 42},
+    "lstm": {"hidden_layer_sizes": (48, 24), "learning_rate_init": 0.006, "max_iter": 700, "random_state": 42},
+    "tcn": {"hidden_layer_sizes": (64, 24), "learning_rate_init": 0.006, "max_iter": 700, "random_state": 42},
+    "cnn": {"hidden_layer_sizes": (48, 16), "learning_rate_init": 0.008, "max_iter": 650, "random_state": 42},
     "gpr": {"alpha": 0.001, "normalize_y": True, "random_state": 42},
 }
 
@@ -97,6 +98,7 @@ def train_model(params=None, model_key="xgboost"):
     x = []
     y = []
     groups = []
+    prefix_tags = []
     for item in records:
         group_id = item.get("cell_name") or str(item["id"])
         for fraction in PREFIX_FRACTIONS:
@@ -111,32 +113,42 @@ def train_model(params=None, model_key="xgboost"):
             x.append([features[name] for name in feature_names])
             y.append(item["cycle_life"])
             groups.append(group_id)
+            prefix_tags.append(fraction)
 
     import joblib
 
     x_array = np.array(x, dtype=float)
     y_array = np.array(y, dtype=float)
     groups_array = np.array(groups)
+    prefix_tags_array = np.array(prefix_tags, dtype=float)
     model = _build_model(model_key, params)
+    window_metrics = {}
+    primary_pred = None
+    primary_eval_y = None
     # 用完整寿命曲线生成多个早期前缀训练样本；评估时按电池留一，避免同一电池前缀泄漏。
     if len(records) <= 40:
-        predictions = []
-        eval_y_values = []
-        for train_index, test_index in LeaveOneGroupOut().split(x_array, y_array, groups_array):
-            fold_model = _build_model(model_key, params)
-            fold_model.fit(x_array[train_index], y_array[train_index])
-            group = groups_array[test_index][0]
-            eval_candidates = [
-                index
-                for index in test_index
-                if group == groups_array[index]
-                and abs(PREFIX_FRACTIONS[index % len(PREFIX_FRACTIONS)] - eval_prefix_fraction) < 1e-9
-            ]
-            eval_index = eval_candidates[0] if eval_candidates else test_index[0]
-            predictions.append(float(fold_model.predict(x_array[[eval_index]])[0]))
-            eval_y_values.append(float(y_array[eval_index]))
-        pred = np.array(predictions)
-        eval_y = np.array(eval_y_values)
+        for window_fraction in EVAL_PREFIX_FRACTIONS:
+            predictions = []
+            eval_y_values = []
+            for train_index, test_index in LeaveOneGroupOut().split(x_array, y_array, groups_array):
+                fold_model = _build_model(model_key, params)
+                fold_model.fit(x_array[train_index], y_array[train_index])
+                eval_candidates = [index for index in test_index if abs(prefix_tags_array[index] - window_fraction) < 1e-9]
+                eval_index = eval_candidates[0] if eval_candidates else test_index[0]
+                predictions.append(float(fold_model.predict(x_array[[eval_index]])[0]))
+                eval_y_values.append(float(y_array[eval_index]))
+            window_pred = np.array(predictions)
+            window_eval_y = np.array(eval_y_values)
+            window_metrics[f"前{int(window_fraction * 100)}%"] = {
+                "RMSE": round(float(np.sqrt(mean_squared_error(window_eval_y, window_pred))), 3),
+                "MAE": round(float(mean_absolute_error(window_eval_y, window_pred)), 3),
+                "R2": round(float(r2_score(window_eval_y, window_pred)), 3),
+            }
+            if abs(window_fraction - eval_prefix_fraction) < 1e-9:
+                primary_pred = window_pred
+                primary_eval_y = window_eval_y
+        pred = primary_pred if primary_pred is not None else window_pred
+        eval_y = primary_eval_y if primary_eval_y is not None else window_eval_y
     else:
         record_groups = np.array([item.get("cell_name") or str(item["id"]) for item in records])
         train_groups, test_groups = train_test_split(record_groups, test_size=0.25, random_state=42)
@@ -157,6 +169,9 @@ def train_model(params=None, model_key="xgboost"):
         "排除样本": max(len(all_rows) - len(records), 0),
         "训练样本筛选": "完整寿命曲线生成早期前缀样本，仅使用可靠 EOL 标签",
         "观测窗口": f"训练前缀 5%-30%，留一评估使用前 {int(eval_prefix_fraction * 100)}%",
+        "窗口评估": window_metrics,
+        "预测不确定性": f"默认 ±{round(float(np.sqrt(mean_squared_error(eval_y, pred))))} 圈",
+        "扩展特征": "已使用电压/电流特征；温度/内阻原始数据未提供" ,
     }
     joblib.dump(
         {
@@ -165,6 +180,7 @@ def train_model(params=None, model_key="xgboost"):
             "model_key": model_key,
             "training_mode": "full_curve_prefix_transfer",
             "prefix_fractions": PREFIX_FRACTIONS,
+            "uncertainty_cycles": round(float(np.sqrt(mean_squared_error(eval_y, pred)))),
         },
         model_path(model_key),
     )

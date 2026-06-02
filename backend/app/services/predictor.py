@@ -94,6 +94,13 @@ def extract_features(battery_type, theoretical_capacity, rated_capacity, c_rate,
     last = curve[-1]["specific_capacity"]
     retention = last / first if first else 0
     slope = (last - first) / max(life_hint, 1)
+    voltage_values = [float(point["voltage_V"]) for point in curve if "voltage_V" in point]
+    current_values = [float(point["current_mA"]) for point in curve if "current_mA" in point]
+    temp_values = [float(point["temperature_C"]) for point in curve if "temperature_C" in point]
+    resistance_values = [float(point["internal_resistance_mOhm"]) for point in curve if "internal_resistance_mOhm" in point]
+    voltage_slope = 0
+    if len(voltage_values) >= 2:
+        voltage_slope = (voltage_values[-1] - voltage_values[0]) / max(life_hint, 1)
     base_features = {
         "type_LCO": 1 if battery_type == "LCO" else 0,
         "type_LFP": 1 if battery_type == "LFP" else 0,
@@ -110,6 +117,17 @@ def extract_features(battery_type, theoretical_capacity, rated_capacity, c_rate,
         "latest_capacity": last,
         "retention": retention,
         "early_slope": slope,
+        "voltage_mean": float(np.mean(voltage_values)) if voltage_values else 0,
+        "voltage_min": float(np.min(voltage_values)) if voltage_values else 0,
+        "voltage_max": float(np.max(voltage_values)) if voltage_values else 0,
+        "voltage_slope": voltage_slope,
+        "current_mean_abs": float(np.mean(np.abs(current_values))) if current_values else 0,
+        "temperature_mean": float(np.mean(temp_values)) if temp_values else 0,
+        "internal_resistance_mean": float(np.mean(resistance_values)) if resistance_values else 0,
+        "has_voltage": 1 if voltage_values else 0,
+        "has_current": 1 if current_values else 0,
+        "has_temperature": 1 if temp_values else 0,
+        "has_internal_resistance": 1 if resistance_values else 0,
     }
     sampled_soh = _normalized_soh(curve, grid_size=16)
     for index, value in enumerate(sampled_soh):
@@ -150,6 +168,7 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
     current_cycle = max(point["cycle"] for point in curve)
     current_soh = curve[-1]["soh"]
     model_prediction = None
+    prediction_uncertainty = None
     try:
         import joblib
 
@@ -159,16 +178,23 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
             feature_names = model_payload["feature_names"]
             features = extract_features(battery_type, theoretical_capacity, rated_capacity, c_rate, curve)
             model_prediction = round(float(model_payload["model"].predict([[features[name] for name in feature_names]])[0]), 0)
+            prediction_uncertainty = model_payload.get("uncertainty_cycles")
     except Exception:
         model_prediction = None
 
     predicted_cycle_life = int(max(model_prediction or best["cycle_life"], current_cycle))
     remaining_life = max(int(predicted_cycle_life - current_cycle), 0)
+    if prediction_uncertainty is None:
+        prediction_uncertainty = max(30, int(abs(best["cycle_life"] - predicted_cycle_life) * 0.5))
+    prediction_uncertainty = int(round(float(prediction_uncertainty)))
     predicted_curve = _rescale_future_curve(curve, best["capacity_curve"], best["cycle_life"], predicted_cycle_life, rated_capacity)
 
     result = {
         "predicted_cycle_life": predicted_cycle_life,
         "predicted_remaining_life": remaining_life,
+        "prediction_uncertainty_cycles": prediction_uncertainty,
+        "predicted_life_lower": max(predicted_cycle_life - prediction_uncertainty, current_cycle),
+        "predicted_life_upper": predicted_cycle_life + prediction_uncertainty,
         "soh_at_prediction": round(float(current_soh), 2),
         "correlation_score": round(best_score, 4),
         "matched_dataset": best,

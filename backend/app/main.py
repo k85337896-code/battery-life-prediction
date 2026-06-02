@@ -146,8 +146,8 @@ def create_dataset(payload: dict):
                 battery_type, theoretical_capacity, rated_capacity, c_rate, cycle_life,
                 current_soh, capacity_curve, source, note, created_at,
                 chemistry, dataset_name, cell_name, label_status,
-                training_eligible, quality_flags, capacity_baseline
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                training_eligible, quality_flags, capacity_baseline, additional_features
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload["battery_type"],
@@ -167,6 +167,7 @@ def create_dataset(payload: dict):
                 payload.get("training_eligible", infer_dataset_quality(payload["capacity_curve"])[1]),
                 json.dumps(payload.get("quality_flags", infer_dataset_quality(payload["capacity_curve"])[2]), ensure_ascii=False),
                 payload.get("capacity_baseline", payload["rated_capacity"]),
+                json.dumps(payload.get("additional_features", {}), ensure_ascii=False),
             ),
         )
     return {"id": cursor.lastrowid}
@@ -185,6 +186,9 @@ def update_dataset(dataset_id: int, payload: dict):
     if "capacity_curve" in payload:
         sets.append("capacity_curve = ?")
         values.append(json.dumps(payload["capacity_curve"], ensure_ascii=False))
+    if "additional_features" in payload:
+        sets.append("additional_features = ?")
+        values.append(json.dumps(payload["additional_features"], ensure_ascii=False))
     if not sets:
         return {"ok": True}
     values.append(dataset_id)
@@ -210,8 +214,8 @@ async def import_dataset_csv(file: UploadFile = File(...), battery_type: str = F
             INSERT INTO battery_dataset (
                 battery_type, theoretical_capacity, rated_capacity, c_rate, cycle_life,
                 current_soh, capacity_curve, source, note, created_at,
-                label_status, training_eligible, quality_flags, capacity_baseline
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                label_status, training_eligible, quality_flags, capacity_baseline, additional_features
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 battery_type,
@@ -228,6 +232,7 @@ async def import_dataset_csv(file: UploadFile = File(...), battery_type: str = F
                 infer_dataset_quality(curve)[1],
                 json.dumps(infer_dataset_quality(curve)[2], ensure_ascii=False),
                 rated_capacity,
+                json.dumps({}, ensure_ascii=False),
             ),
         )
     return {"ok": True}

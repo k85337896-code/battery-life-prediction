@@ -7,7 +7,17 @@ def row_to_dict(row: Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     data = dict(row)
-    for key in ("capacity_curve", "input_curve", "predicted_curve", "metrics", "feature_list", "hyperparameters", "input_summary", "quality_flags"):
+    for key in (
+        "capacity_curve",
+        "input_curve",
+        "predicted_curve",
+        "metrics",
+        "feature_list",
+        "hyperparameters",
+        "input_summary",
+        "quality_flags",
+        "additional_features",
+    ):
         if key in data and isinstance(data[key], str):
             try:
                 data[key] = json.loads(data[key])

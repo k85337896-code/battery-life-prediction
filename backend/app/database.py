@@ -38,7 +38,8 @@ def init_db():
                 label_status TEXT NOT NULL DEFAULT '未评估',
                 training_eligible INTEGER NOT NULL DEFAULT 1,
                 quality_flags TEXT NOT NULL DEFAULT '[]',
-                capacity_baseline REAL
+                capacity_baseline REAL,
+                additional_features TEXT NOT NULL DEFAULT '{}'
             );
 
             CREATE TABLE IF NOT EXISTS prediction_history (
@@ -86,6 +87,8 @@ def init_db():
             conn.execute("ALTER TABLE battery_dataset ADD COLUMN quality_flags TEXT NOT NULL DEFAULT '[]'")
         if "capacity_baseline" not in dataset_columns:
             conn.execute("ALTER TABLE battery_dataset ADD COLUMN capacity_baseline REAL")
+        if "additional_features" not in dataset_columns:
+            conn.execute("ALTER TABLE battery_dataset ADD COLUMN additional_features TEXT NOT NULL DEFAULT '{}'")
 
 
 def now_iso() -> str:

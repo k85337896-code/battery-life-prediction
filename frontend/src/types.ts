@@ -24,12 +24,16 @@ export interface DatasetItem {
   training_eligible?: number;
   quality_flags?: string[];
   capacity_baseline?: number;
+  additional_features?: Record<string, unknown>;
   created_at: string;
 }
 
 export interface PredictionResult {
   predicted_cycle_life: number;
   predicted_remaining_life: number;
+  prediction_uncertainty_cycles?: number;
+  predicted_life_lower?: number;
+  predicted_life_upper?: number;
   soh_at_prediction: number;
   correlation_score: number;
   matched_dataset: DatasetItem;

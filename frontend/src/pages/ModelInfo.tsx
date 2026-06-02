@@ -1,5 +1,5 @@
 import React from "react";
-import { Button, Card, Col, Descriptions, Empty, Form, InputNumber, message, Row, Select, Space, Statistic, Table, Tabs, Tag } from "antd";
+import { Alert, Button, Card, Col, Descriptions, Empty, Form, InputNumber, message, Row, Select, Space, Statistic, Table, Tabs, Tag } from "antd";
 import { RefreshCw } from "lucide-react";
 import { api, apiError } from "../api/client";
 import { AuthContext } from "../main";
@@ -73,6 +73,13 @@ export default function ModelInfo() {
         </Card>
       )}
 
+      <Alert
+        type="info"
+        showIcon
+        message="早期寿命预测难度说明"
+        description="当前评估是在整块电池留出的条件下，仅用前 10%/20%/30% 循环预测完整寿命。早期 SOH 差异很小，误差偏大是任务本身的信息不足，不代表系统故障。"
+      />
+
       <Row gutter={16}>
         <Col span={8}><Card><Statistic title="最佳模型" value={best.model_type || "-"} /></Card></Col>
         <Col span={8}><Card><Statistic title="RMSE" value={bestMetrics.RMSE || 0} precision={3} /></Card></Col>
@@ -91,6 +98,14 @@ export default function ModelInfo() {
             { title: "RMSE", render: (_, record) => <Tag>{record.metrics?.RMSE}</Tag> },
             { title: "MAE", render: (_, record) => <Tag>{record.metrics?.MAE}</Tag> },
             { title: "R²", render: (_, record) => <Tag color={(record.metrics?.R2 ?? 0) >= 0 ? "green" : "orange"}>{record.metrics?.R2}</Tag> },
+            {
+              title: "窗口误差",
+              render: (_, record) => (
+                <Space>
+                  {["前10%", "前20%", "前30%"].map((key) => <Tag key={key}>{key} RMSE {record.metrics?.["窗口评估"]?.[key]?.RMSE ?? "-"}</Tag>)}
+                </Space>
+              ),
+            },
             { title: "评估方式", render: (_, record) => <Tag color="blue">{record.metrics?.["评估方式"] || "-"}</Tag> },
             { title: "训练时间", dataIndex: "trained_at" },
           ]}
@@ -108,6 +123,15 @@ export default function ModelInfo() {
                   <Descriptions.Item label="训练样本">{info.training_data_size} 条电池记录</Descriptions.Item>
                   <Descriptions.Item label="样本筛选">{info.metrics?.["训练样本筛选"] || "未记录"}</Descriptions.Item>
                   <Descriptions.Item label="早期预测窗口">{info.metrics?.["观测窗口"] || "未记录"}</Descriptions.Item>
+                  <Descriptions.Item label="窗口评估">
+                    <Space>
+                      {["前10%", "前20%", "前30%"].map((key) => (
+                        <Tag key={key}>{key}: RMSE {info.metrics?.["窗口评估"]?.[key]?.RMSE ?? "-"} / MAE {info.metrics?.["窗口评估"]?.[key]?.MAE ?? "-"}</Tag>
+                      ))}
+                    </Space>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="不确定性">{info.metrics?.["预测不确定性"] || "未记录"}</Descriptions.Item>
+                  <Descriptions.Item label="扩展特征">{info.metrics?.["扩展特征"] || "未记录"}</Descriptions.Item>
                   <Descriptions.Item label="样本统计">
                     <Space>
                       <Tag>候选 {info.metrics?.["候选样本"] ?? info.training_data_size}</Tag>

@@ -1,5 +1,5 @@
 import React from "react";
-import { Button, Card, Col, Form, InputNumber, message, Row, Select, Space, Statistic, Tag, Upload } from "antd";
+import { Alert, Button, Card, Col, Form, InputNumber, message, Row, Select, Space, Statistic, Tag, Upload } from "antd";
 import { Download, FileUp, Gauge, Play, Sparkles } from "lucide-react";
 import type { UploadFile } from "antd";
 import { useNavigate } from "react-router-dom";
@@ -104,8 +104,8 @@ export default function Predict() {
         <Col xs={24} xl={15}>
           <div className="resultGrid">
             <Card className="resultCard highlightMetric">
-              <Statistic title="匹配预测循环寿命" value={result?.predicted_cycle_life ?? "-"} suffix={result ? "次" : ""} />
-              <Tag color="cyan">基于曲线相似度</Tag>
+              <Statistic title="预测循环寿命" value={result?.predicted_cycle_life ?? "-"} suffix={result ? "次" : ""} />
+              <Tag color="cyan">早期曲线外推</Tag>
             </Card>
             <Card className="resultCard">
               <Statistic title="预测剩余寿命" value={result?.predicted_remaining_life ?? "-"} suffix={result ? "次" : ""} />
@@ -120,6 +120,16 @@ export default function Predict() {
               <Tag color="purple">ML 对照结果</Tag>
             </Card>
           </div>
+
+          {result?.prediction_uncertainty_cycles && (
+            <Alert
+              className="sohPanel"
+              type="warning"
+              showIcon
+              message={`预测寿命约 ${result.predicted_cycle_life} ± ${result.prediction_uncertainty_cycles} 圈`}
+              description={`参考区间：${result.predicted_life_lower} - ${result.predicted_life_upper} 圈。早期循环信息有限，该区间来自当前模型留一评估误差。`}
+            />
+          )}
 
           <Card className="sohPanel" title={<Space><Gauge size={18} />SOH 健康状态</Space>}>
             {result ? <SohProgress value={result.soh_at_prediction} /> : <div className="emptyHint">完成一次预测后显示健康状态与 EOL 参考。</div>}
