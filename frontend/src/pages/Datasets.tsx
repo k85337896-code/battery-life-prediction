@@ -1,5 +1,5 @@
 import React from "react";
-import { Button, Card, Col, Drawer, Input, message, Modal, Row, Space, Table, Tag, Tree } from "antd";
+import { Alert, Button, Card, Col, Descriptions, Drawer, Input, message, Modal, Row, Space, Table, Tag, Tree } from "antd";
 import { Database, Eye, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 import { api, apiError } from "../api/client";
 import { AuthContext } from "../main";
@@ -64,6 +64,7 @@ export default function Datasets() {
 
   const datasetCount = new Set(items.map((item) => `${item.chemistry || ""}/${item.dataset_name || ""}`)).size;
   const chemistryCount = new Set(items.map((item) => item.chemistry || "未标注化学成分")).size;
+  const eligibleCount = items.filter((item) => Number(item.training_eligible ?? 1) === 1).length;
 
   async function importRealDataset() {
     const hide = message.loading("正在导入真实 Excel 数据集并重新训练模型，这可能需要几分钟...", 0);
@@ -89,7 +90,7 @@ export default function Datasets() {
         <div className="heroStats">
           <div><strong>{chemistryCount}</strong><span>化学成分</span></div>
           <div><strong>{datasetCount}</strong><span>数据集</span></div>
-          <div><strong>{items.length}</strong><span>单体电池</span></div>
+          <div><strong>{eligibleCount}/{items.length}</strong><span>可靠训练样本</span></div>
         </div>
       </section>
 
@@ -124,6 +125,20 @@ export default function Datasets() {
                 { title: "数据集", dataIndex: "dataset_name" },
                 { title: "单体电池", dataIndex: "cell_name", render: (v, r) => v || r.note },
                 { title: "组别", dataIndex: "battery_type", render: (v) => <Tag color="geekblue">{v}</Tag> },
+                {
+                  title: "标签质量",
+                  dataIndex: "label_status",
+                  render: (v) => {
+                    const status = v || "未评估";
+                    const color = status === "可靠EOL" ? "green" : status === "未达到EOL" ? "gold" : "orange";
+                    return <Tag color={color}>{status}</Tag>;
+                  },
+                },
+                {
+                  title: "训练用途",
+                  dataIndex: "training_eligible",
+                  render: (v) => Number(v ?? 1) === 1 ? <Tag color="green">参与训练</Tag> : <Tag color="default">仅入库</Tag>,
+                },
                 { title: "循环寿命", dataIndex: "cycle_life", sorter: (a, b) => a.cycle_life - b.cycle_life },
                 { title: "当前 SOH", dataIndex: "current_soh", render: (v) => `${Number(v).toFixed(1)}%` },
                 { title: "容量", dataIndex: "rated_capacity", render: (v) => `${Number(v).toFixed(3)} mAh` },
@@ -151,7 +166,18 @@ export default function Datasets() {
       </Row>
 
       <Drawer title={active?.cell_name || active?.note || "电池曲线"} open={!!active} onClose={() => setActive(null)} width={820}>
-        {active && <CurveChart predicted={active.capacity_curve} height={500} />}
+        {active && (
+          <Space direction="vertical" size={16} className="full">
+            <Descriptions bordered size="small" column={2}>
+              <Descriptions.Item label="标签质量">{active.label_status || "未评估"}</Descriptions.Item>
+              <Descriptions.Item label="训练用途">{Number(active.training_eligible ?? 1) === 1 ? "参与训练" : "仅入库，不参与默认训练"}</Descriptions.Item>
+              <Descriptions.Item label="寿命/截止循环">{active.cycle_life}</Descriptions.Item>
+              <Descriptions.Item label="容量基准">{Number(active.capacity_baseline || active.rated_capacity).toFixed(3)} mAh</Descriptions.Item>
+            </Descriptions>
+            {!!active.quality_flags?.length && <Alert type="warning" showIcon message="质量提示" description={active.quality_flags.join("；")} />}
+            <CurveChart predicted={active.capacity_curve} height={500} />
+          </Space>
+        )}
       </Drawer>
     </div>
   );

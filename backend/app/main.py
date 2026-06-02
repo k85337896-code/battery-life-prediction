@@ -116,6 +116,24 @@ def dataset_tree():
     return tree
 
 
+def infer_dataset_quality(curve: list[dict]):
+    below_indexes = [index for index, point in enumerate(curve) if point.get("soh", 100) <= 80]
+    eol_index = None
+    for index in below_indexes:
+        if index + 2 < len(curve) and all(point.get("soh", 100) <= 80 for point in curve[index : index + 3]):
+            eol_index = index
+            break
+    flags = []
+    if eol_index is None:
+        status = "未达到EOL" if not below_indexes else "低于80%但未持续"
+        flags.append("未形成连续 80% SOH 寿命标签，默认不参与训练")
+        return status, 0, flags
+    if curve[-1].get("soh", 100) > 80:
+        flags.append("低于 80% 后又回升，寿命标签不稳定")
+        return "低于80%后回升", 0, flags
+    return "可靠EOL", 1, flags
+
+
 @app.post("/api/datasets", dependencies=[Depends(require_teacher)])
 def create_dataset(payload: dict):
     required = ["battery_type", "theoretical_capacity", "rated_capacity", "c_rate", "cycle_life", "capacity_curve"]
@@ -127,8 +145,9 @@ def create_dataset(payload: dict):
             INSERT INTO battery_dataset (
                 battery_type, theoretical_capacity, rated_capacity, c_rate, cycle_life,
                 current_soh, capacity_curve, source, note, created_at,
-                chemistry, dataset_name, cell_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                chemistry, dataset_name, cell_name, label_status,
+                training_eligible, quality_flags, capacity_baseline
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload["battery_type"],
@@ -144,6 +163,10 @@ def create_dataset(payload: dict):
                 payload.get("chemistry", "未标注化学成分"),
                 payload.get("dataset_name", "手工录入数据集"),
                 payload.get("cell_name", ""),
+                payload.get("label_status", infer_dataset_quality(payload["capacity_curve"])[0]),
+                payload.get("training_eligible", infer_dataset_quality(payload["capacity_curve"])[1]),
+                json.dumps(payload.get("quality_flags", infer_dataset_quality(payload["capacity_curve"])[2]), ensure_ascii=False),
+                payload.get("capacity_baseline", payload["rated_capacity"]),
             ),
         )
     return {"id": cursor.lastrowid}
@@ -151,7 +174,12 @@ def create_dataset(payload: dict):
 
 @app.put("/api/datasets/{dataset_id}", dependencies=[Depends(require_teacher)])
 def update_dataset(dataset_id: int, payload: dict):
-    allowed = ["battery_type", "theoretical_capacity", "rated_capacity", "c_rate", "cycle_life", "current_soh", "source", "note", "chemistry", "dataset_name", "cell_name"]
+    allowed = [
+        "battery_type", "theoretical_capacity", "rated_capacity", "c_rate",
+        "cycle_life", "current_soh", "source", "note", "chemistry",
+        "dataset_name", "cell_name", "label_status", "training_eligible",
+        "capacity_baseline",
+    ]
     sets = [f"{key} = ?" for key in allowed if key in payload]
     values = [payload[key] for key in allowed if key in payload]
     if "capacity_curve" in payload:
@@ -181,10 +209,26 @@ async def import_dataset_csv(file: UploadFile = File(...), battery_type: str = F
             """
             INSERT INTO battery_dataset (
                 battery_type, theoretical_capacity, rated_capacity, c_rate, cycle_life,
-                current_soh, capacity_curve, source, note, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                current_soh, capacity_curve, source, note, created_at,
+                label_status, training_eligible, quality_flags, capacity_baseline
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (battery_type, theoretical_capacity, rated_capacity, c_rate, life, curve[-1]["soh"], json.dumps(curve, ensure_ascii=False), "教师 CSV 导入", file.filename, now_iso()),
+            (
+                battery_type,
+                theoretical_capacity,
+                rated_capacity,
+                c_rate,
+                life,
+                curve[-1]["soh"],
+                json.dumps(curve, ensure_ascii=False),
+                "教师 CSV 导入",
+                file.filename,
+                now_iso(),
+                infer_dataset_quality(curve)[0],
+                infer_dataset_quality(curve)[1],
+                json.dumps(infer_dataset_quality(curve)[2], ensure_ascii=False),
+                rated_capacity,
+            ),
         )
     return {"ok": True}
 

@@ -20,6 +20,10 @@ export interface DatasetItem {
   chemistry?: string;
   dataset_name?: string;
   cell_name?: string;
+  label_status?: string;
+  training_eligible?: number;
+  quality_flags?: string[];
+  capacity_baseline?: number;
   created_at: string;
 }
 

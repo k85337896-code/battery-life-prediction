@@ -16,12 +16,13 @@ from .predictor import extract_features
 
 
 DEFAULT_PARAMS = {
-    "n_estimators": 120,
-    "max_depth": 4,
-    "learning_rate": 0.08,
+    "n_estimators": 80,
+    "max_depth": 2,
+    "learning_rate": 0.05,
     "subsample": 0.9,
     "random_state": 42,
 }
+DEFAULT_TRAINING_OBSERVATION_FRACTION = 0.6
 
 MODEL_DEFAULTS = {
     "xgboost": DEFAULT_PARAMS,
@@ -63,16 +64,24 @@ def train_model(params=None, model_key="xgboost"):
     if model_key not in MODEL_OPTIONS:
         raise ValueError("不支持的模型类型。")
     clean_params = {}
-    for key, value in (params or {}).items():
+    raw_params = params or {}
+    training_observation_fraction = float(raw_params.get("training_observation_fraction", DEFAULT_TRAINING_OBSERVATION_FRACTION))
+    training_observation_fraction = min(max(training_observation_fraction, 0.1), 1.0)
+    for key, value in raw_params.items():
         key = PARAM_ALIASES.get(key, key)
         if value not in (None, "") and key in MODEL_PARAM_KEYS[model_key]:
             clean_params[key] = value
     params = {**MODEL_DEFAULTS[model_key], **clean_params}
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM battery_dataset").fetchall()
+        all_rows = conn.execute("SELECT * FROM battery_dataset").fetchall()
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(battery_dataset)").fetchall()]
+        if "training_eligible" in columns:
+            rows = conn.execute("SELECT * FROM battery_dataset WHERE training_eligible = 1").fetchall()
+        else:
+            rows = all_rows
 
     if len(rows) < 8:
-        raise ValueError("训练数据少于 8 条，请先生成或导入更多数据库条目。")
+        raise ValueError("可靠 EOL 训练数据少于 8 条，请先导入更多达到 80% SOH 的电池数据。")
 
     records = [row_to_dict(row) for row in rows]
     feature_names = list(
@@ -87,12 +96,13 @@ def train_model(params=None, model_key="xgboost"):
     x = []
     y = []
     for item in records:
+        train_points = max(8, int(len(item["capacity_curve"]) * training_observation_fraction))
         features = extract_features(
             item["battery_type"],
             item["theoretical_capacity"],
             item["rated_capacity"],
             item["c_rate"],
-            item["capacity_curve"][: min(40, len(item["capacity_curve"]))],
+            item["capacity_curve"][: min(train_points, len(item["capacity_curve"]))],
         )
         x.append([features[name] for name in feature_names])
         y.append(item["cycle_life"])
@@ -122,6 +132,11 @@ def train_model(params=None, model_key="xgboost"):
         "MAE": round(float(mean_absolute_error(eval_y, pred)), 3),
         "R2": round(float(r2_score(eval_y, pred)), 3),
         "评估方式": "留一交叉验证" if len(records) <= 40 else "随机测试集",
+        "候选样本": len(all_rows),
+        "可靠EOL样本": len(records),
+        "排除样本": max(len(all_rows) - len(records), 0),
+        "训练样本筛选": "仅使用连续达到 80% SOH 的可靠寿命标签",
+        "观测窗口": f"每条曲线前 {int(training_observation_fraction * 100)}%",
     }
     joblib.dump({"model": model, "feature_names": feature_names, "model_key": model_key}, model_path(model_key))
 

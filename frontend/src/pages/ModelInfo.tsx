@@ -55,18 +55,19 @@ export default function ModelInfo() {
         </div>
         <div className="heroStats">
           <div><strong>{models.length}</strong><span>已训练模型</span></div>
-          <div><strong>{best.training_data_size || 0}</strong><span>训练样本</span></div>
+          <div><strong>{bestMetrics["可靠EOL样本"] || best.training_data_size || 0}</strong><span>可靠训练样本</span></div>
           <div><strong>{bestMetrics.R2 ?? "-"}</strong><span>最佳 R²</span></div>
         </div>
       </section>
 
       {isTeacher && (
         <Card title="训练参数编辑" className="controlPanel">
-          <Form layout="inline" initialValues={{ model_key: "xgboost", n_estimators: 120, max_depth: 4, learning_rate: 0.08 }} onFinish={train}>
+          <Form layout="inline" initialValues={{ model_key: "xgboost", n_estimators: 80, max_depth: 2, learning_rate: 0.05, training_observation_fraction: 0.6 }} onFinish={train}>
             <Form.Item label="模型" name="model_key"><Select style={{ width: 210 }} options={modelOptions} /></Form.Item>
             <Form.Item label="树数量" name="n_estimators"><InputNumber min={20} max={500} /></Form.Item>
             <Form.Item label="最大深度" name="max_depth"><InputNumber min={2} max={10} /></Form.Item>
             <Form.Item label="学习率" name="learning_rate"><InputNumber min={0.001} max={0.5} step={0.001} /></Form.Item>
+            <Form.Item label="观测窗口" name="training_observation_fraction"><InputNumber min={0.1} max={1} step={0.1} /></Form.Item>
             <Button type="primary" htmlType="submit" icon={<RefreshCw size={16} />} loading={loading}>重新训练</Button>
           </Form>
         </Card>
@@ -85,6 +86,8 @@ export default function ModelInfo() {
           columns={[
             { title: "模型", dataIndex: "model_type" },
             { title: "训练规模", dataIndex: "training_data_size" },
+            { title: "候选样本", render: (_, record) => <Tag>{record.metrics?.["候选样本"] ?? record.training_data_size}</Tag> },
+            { title: "排除样本", render: (_, record) => <Tag color={(record.metrics?.["排除样本"] ?? 0) ? "orange" : "green"}>{record.metrics?.["排除样本"] ?? 0}</Tag> },
             { title: "RMSE", render: (_, record) => <Tag>{record.metrics?.RMSE}</Tag> },
             { title: "MAE", render: (_, record) => <Tag>{record.metrics?.MAE}</Tag> },
             { title: "R²", render: (_, record) => <Tag color={(record.metrics?.R2 ?? 0) >= 0 ? "green" : "orange"}>{record.metrics?.R2}</Tag> },
@@ -103,6 +106,15 @@ export default function ModelInfo() {
               children: (
                 <Descriptions bordered column={1}>
                   <Descriptions.Item label="训练样本">{info.training_data_size} 条电池记录</Descriptions.Item>
+                  <Descriptions.Item label="样本筛选">{info.metrics?.["训练样本筛选"] || "未记录"}</Descriptions.Item>
+                  <Descriptions.Item label="观测窗口">{info.metrics?.["观测窗口"] || "未记录"}</Descriptions.Item>
+                  <Descriptions.Item label="样本统计">
+                    <Space>
+                      <Tag>候选 {info.metrics?.["候选样本"] ?? info.training_data_size}</Tag>
+                      <Tag color="green">可靠EOL {info.metrics?.["可靠EOL样本"] ?? info.training_data_size}</Tag>
+                      <Tag color="orange">排除 {info.metrics?.["排除样本"] ?? 0}</Tag>
+                    </Space>
+                  </Descriptions.Item>
                   <Descriptions.Item label="划分方式">{info.metrics?.["评估方式"] || "未记录"}</Descriptions.Item>
                   <Descriptions.Item label="模型精度">
                     <Space><Tag>RMSE {info.metrics?.RMSE}</Tag><Tag>MAE {info.metrics?.MAE}</Tag><Tag>R² {info.metrics?.R2}</Tag></Space>
