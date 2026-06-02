@@ -3,7 +3,7 @@ import { Alert, Button, Card, Col, Descriptions, Drawer, Input, message, Modal, 
 import { Database, Eye, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 import { api, apiError } from "../api/client";
 import { AuthContext } from "../main";
-import { CurveChart } from "../components/Chart";
+import { CurveChart, DatasetSohChart } from "../components/Chart";
 import type { DatasetItem } from "../types";
 
 type TreeNode = { title: string; key: string; children?: TreeNode[] };
@@ -65,6 +65,10 @@ export default function Datasets() {
   const datasetCount = new Set(items.map((item) => `${item.chemistry || ""}/${item.dataset_name || ""}`)).size;
   const chemistryCount = new Set(items.map((item) => item.chemistry || "未标注化学成分")).size;
   const eligibleCount = items.filter((item) => Number(item.training_eligible ?? 1) === 1).length;
+  const filteredEligibleCount = filtered.filter((item) => Number(item.training_eligible ?? 1) === 1).length;
+  const filteredExcludedCount = filtered.length - filteredEligibleCount;
+  const filteredLives = filtered.map((item) => Number(item.cycle_life)).filter(Number.isFinite);
+  const lifeRange = filteredLives.length ? `${Math.min(...filteredLives)} - ${Math.max(...filteredLives)} 圈` : "-";
 
   async function importRealDataset() {
     const hide = message.loading("正在导入真实 Excel 数据集并重新训练模型，这可能需要几分钟...", 0);
@@ -93,6 +97,21 @@ export default function Datasets() {
           <div><strong>{eligibleCount}/{items.length}</strong><span>可靠训练样本</span></div>
         </div>
       </section>
+
+      <Card
+        title="全数据集衰减曲线"
+        className="controlPanel"
+        extra={
+          <Space>
+            <Tag color="blue">当前 {filtered.length} 块</Tag>
+            <Tag color="green">可靠EOL {filteredEligibleCount}</Tag>
+            <Tag color="orange">仅入库 {filteredExcludedCount}</Tag>
+            <Tag>寿命范围 {lifeRange}</Tag>
+          </Space>
+        }
+      >
+        <DatasetSohChart items={filtered} height={500} />
+      </Card>
 
       <Row gutter={[18, 18]}>
         <Col xs={24} xl={7}>
