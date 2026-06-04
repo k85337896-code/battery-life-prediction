@@ -62,6 +62,25 @@ def _build_model(model_key: str, params: dict):
     raise ValueError("不支持的模型类型。")
 
 
+def _regression_metrics(actual, predicted):
+    actual_array = np.array(actual, dtype=float)
+    pred_array = np.array(predicted, dtype=float)
+    rmse = float(np.sqrt(mean_squared_error(actual_array, pred_array)))
+    mae = float(mean_absolute_error(actual_array, pred_array))
+    mean_life = float(np.mean(actual_array)) if len(actual_array) else 0
+    safe_actual = np.where(actual_array == 0, np.nan, actual_array)
+    mape = float(np.nanmean(np.abs((actual_array - pred_array) / safe_actual)) * 100)
+    nrmse = (rmse / mean_life * 100) if mean_life else 0
+    return {
+        "RMSE": round(rmse, 3),
+        "MAE": round(mae, 3),
+        "R2": round(float(r2_score(actual_array, pred_array)), 3),
+        "MAPE": round(mape, 2),
+        "NRMSE": round(nrmse, 2),
+        "平均寿命": round(mean_life, 1),
+    }
+
+
 def train_model(params=None, model_key="xgboost"):
     if model_key not in MODEL_OPTIONS:
         raise ValueError("不支持的模型类型。")
@@ -139,11 +158,7 @@ def train_model(params=None, model_key="xgboost"):
                 eval_y_values.append(float(y_array[eval_index]))
             window_pred = np.array(predictions)
             window_eval_y = np.array(eval_y_values)
-            window_metrics[f"前{int(window_fraction * 100)}%"] = {
-                "RMSE": round(float(np.sqrt(mean_squared_error(window_eval_y, window_pred))), 3),
-                "MAE": round(float(mean_absolute_error(window_eval_y, window_pred)), 3),
-                "R2": round(float(r2_score(window_eval_y, window_pred)), 3),
-            }
+            window_metrics[f"前{int(window_fraction * 100)}%"] = _regression_metrics(window_eval_y, window_pred)
             if abs(window_fraction - eval_prefix_fraction) < 1e-9:
                 primary_pred = window_pred
                 primary_eval_y = window_eval_y
@@ -158,10 +173,9 @@ def train_model(params=None, model_key="xgboost"):
         pred = model.predict(x_array[test_mask])
         eval_y = y_array[test_mask]
     model.fit(x_array, y_array)
+    accuracy_metrics = _regression_metrics(eval_y, pred)
     metrics = {
-        "RMSE": round(float(np.sqrt(mean_squared_error(eval_y, pred))), 3),
-        "MAE": round(float(mean_absolute_error(eval_y, pred)), 3),
-        "R2": round(float(r2_score(eval_y, pred)), 3),
+        **accuracy_metrics,
         "评估方式": "留一交叉验证" if len(records) <= 40 else "随机测试集",
         "候选样本": len(all_rows),
         "可靠EOL样本": len(records),
@@ -170,7 +184,8 @@ def train_model(params=None, model_key="xgboost"):
         "训练样本筛选": "完整寿命曲线生成早期前缀样本，仅使用可靠 EOL 标签",
         "观测窗口": f"训练前缀 5%-30%，留一评估使用前 {int(eval_prefix_fraction * 100)}%",
         "窗口评估": window_metrics,
-        "预测不确定性": f"默认 ±{round(float(np.sqrt(mean_squared_error(eval_y, pred))))} 圈",
+        "误差口径": "RMSE/MAE 为循环数误差；MAPE/NRMSE 为百分比误差",
+        "预测不确定性": f"默认 ±{round(accuracy_metrics['RMSE'])} 圈",
         "扩展特征": "已使用电压/电流特征；温度/内阻原始数据未提供" ,
     }
     joblib.dump(
@@ -180,7 +195,7 @@ def train_model(params=None, model_key="xgboost"):
             "model_key": model_key,
             "training_mode": "full_curve_prefix_transfer",
             "prefix_fractions": PREFIX_FRACTIONS,
-            "uncertainty_cycles": round(float(np.sqrt(mean_squared_error(eval_y, pred)))),
+            "uncertainty_cycles": round(accuracy_metrics["RMSE"]),
         },
         model_path(model_key),
     )
