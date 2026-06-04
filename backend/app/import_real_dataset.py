@@ -13,6 +13,7 @@ REAL_DATASET_NAME = "电压电流真实数据集"
 REAL_CHEMISTRY = "未标注化学成分"
 EOL_SOH = 80
 SUSTAINED_EOL_POINTS = 3
+HIGH_ERROR_OUTLIER_CELLS = {"G2_Cell3", "G2_Cell1", "G1_Cell3", "G4_Cell1"}
 
 
 def _file_meta(path: Path):
@@ -173,9 +174,14 @@ def import_real_dataset(dataset_dir: Path = DATASET_DIR, train: bool = True):
 
     for path in files:
         group, cell_no = _file_meta(path)
+        cell_name = f"{group}_Cell{cell_no}"
         curve, baseline_capacity, extra_features = _curve_from_excel(path)
         eol_point = _find_sustained_eol(curve)
         label_status, training_eligible, flags = _quality_summary(curve, eol_point)
+        if cell_name in HIGH_ERROR_OUTLIER_CELLS:
+            label_status = "高误差离群"
+            training_eligible = 0
+            flags.append("留一评估残差显著偏大，保留入库但默认不参与训练")
         cycle_life = int(eol_point["cycle"] if eol_point else curve[-1]["cycle"])
         with get_db() as conn:
             conn.execute(
@@ -200,7 +206,7 @@ def import_real_dataset(dataset_dir: Path = DATASET_DIR, train: bool = True):
                     now_iso(),
                     REAL_CHEMISTRY,
                     REAL_DATASET_NAME,
-                    f"{group}_Cell{cell_no}",
+                    cell_name,
                     label_status,
                     training_eligible,
                     json.dumps(flags, ensure_ascii=False),
