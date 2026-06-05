@@ -79,19 +79,13 @@ export default function ModelInfo() {
         type="info"
         showIcon
         message="早期寿命预测难度说明"
-        description="当前评估是在整块电池留出的条件下，仅用前 10%/20%/30% 循环预测完整寿命。RMSE/MAE 的单位是循环圈数；MAPE/NRMSE 才是百分比误差。早期 SOH 差异很小，误差偏大是任务本身的信息不足，不代表系统故障。"
+        description="当前评估是在整块电池留出的条件下，仅用前 10%/20%/30% 循环预测完整寿命。页面默认展示百分比误差，MAPE 表示平均绝对百分比误差，NRMSE 表示归一化均方根误差。早期 SOH 差异很小，误差偏大是任务本身的信息不足，不代表系统故障。"
       />
 
       <Row gutter={16}>
         <Col span={8}><Card><Statistic title="最佳模型" value={best.model_type || "-"} /></Card></Col>
-        <Col span={8}><Card><Statistic title="RMSE（圈）" value={bestMetrics.RMSE || 0} precision={3} /></Card></Col>
         <Col span={8}><Card><Statistic title="MAPE（百分比）" value={bestMetrics.MAPE || 0} precision={2} suffix="%" /></Card></Col>
-      </Row>
-
-      <Row gutter={16}>
         <Col span={8}><Card><Statistic title="NRMSE（百分比）" value={bestMetrics.NRMSE || 0} precision={2} suffix="%" /></Card></Col>
-        <Col span={8}><Card><Statistic title="平均寿命" value={bestMetrics["平均寿命"] || 0} precision={1} suffix="圈" /></Card></Col>
-        <Col span={8}><Card><Statistic title="评估方式" value={bestMetrics["评估方式"] || "-"} /></Card></Col>
       </Row>
 
       <Card title="已训练模型">
@@ -103,8 +97,6 @@ export default function ModelInfo() {
             { title: "训练规模", dataIndex: "training_data_size" },
             { title: "候选样本", render: (_, record) => <Tag>{record.metrics?.["候选样本"] ?? record.training_data_size}</Tag> },
             { title: "排除样本", render: (_, record) => <Tag color={(record.metrics?.["排除样本"] ?? 0) ? "orange" : "green"}>{record.metrics?.["排除样本"] ?? 0}</Tag> },
-            { title: "RMSE（圈）", render: (_, record) => <Tag>{record.metrics?.RMSE}</Tag> },
-            { title: "MAE（圈）", render: (_, record) => <Tag>{record.metrics?.MAE}</Tag> },
             { title: "MAPE", render: (_, record) => <Tag color="cyan">{metricValue(record.metrics?.MAPE, "%")}</Tag> },
             { title: "NRMSE", render: (_, record) => <Tag color="purple">{metricValue(record.metrics?.NRMSE, "%")}</Tag> },
             { title: "R²", render: (_, record) => <Tag color={(record.metrics?.R2 ?? 0) >= 0 ? "green" : "orange"}>{record.metrics?.R2}</Tag> },
@@ -114,7 +106,7 @@ export default function ModelInfo() {
                 <Space>
                   {["前10%", "前20%", "前30%"].map((key) => (
                     <Tag key={key}>
-                      {key} {record.metrics?.["窗口评估"]?.[key]?.RMSE ?? "-"}圈 / {metricValue(record.metrics?.["窗口评估"]?.[key]?.MAPE, "%")}
+                      {key} MAPE {metricValue(record.metrics?.["窗口评估"]?.[key]?.MAPE, "%")}
                     </Tag>
                   ))}
                 </Space>
@@ -141,7 +133,7 @@ export default function ModelInfo() {
                     <Space>
                       {["前10%", "前20%", "前30%"].map((key) => (
                         <Tag key={key}>
-                          {key}: RMSE {info.metrics?.["窗口评估"]?.[key]?.RMSE ?? "-"} 圈 / MAPE {metricValue(info.metrics?.["窗口评估"]?.[key]?.MAPE, "%")}
+                          {key}: MAPE {metricValue(info.metrics?.["窗口评估"]?.[key]?.MAPE, "%")} / NRMSE {metricValue(info.metrics?.["窗口评估"]?.[key]?.NRMSE, "%")}
                         </Tag>
                       ))}
                     </Space>
@@ -156,11 +148,9 @@ export default function ModelInfo() {
                     </Space>
                   </Descriptions.Item>
                   <Descriptions.Item label="划分方式">{info.metrics?.["评估方式"] || "未记录"}</Descriptions.Item>
-                  <Descriptions.Item label="误差口径">{info.metrics?.["误差口径"] || "RMSE/MAE 为循环数误差"}</Descriptions.Item>
+                  <Descriptions.Item label="误差口径">页面展示百分比误差：MAPE 为平均绝对百分比误差，NRMSE 为 RMSE 按平均寿命归一化后的百分比。</Descriptions.Item>
                   <Descriptions.Item label="模型精度">
                     <Space>
-                      <Tag>RMSE {info.metrics?.RMSE} 圈</Tag>
-                      <Tag>MAE {info.metrics?.MAE} 圈</Tag>
                       <Tag>MAPE {metricValue(info.metrics?.MAPE, "%")}</Tag>
                       <Tag>NRMSE {metricValue(info.metrics?.NRMSE, "%")}</Tag>
                       <Tag>R² {info.metrics?.R2}</Tag>
