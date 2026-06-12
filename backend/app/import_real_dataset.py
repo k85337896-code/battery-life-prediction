@@ -10,7 +10,7 @@ from .services.modeling import train_all_models
 
 DATASET_DIR = Path(r"D:\Users\cxy\桌面\电压电流")
 REAL_DATASET_NAME = "电压电流真实数据集"
-REAL_CHEMISTRY = "未标注化学成分"
+REAL_CHEMISTRY = "实验组锂离子电池"
 EOL_SOH = 80
 SUSTAINED_EOL_POINTS = 3
 HIGH_ERROR_OUTLIER_CELLS = {"G2_Cell3", "G2_Cell1", "G1_Cell3", "G4_Cell1"}

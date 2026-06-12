@@ -4,6 +4,8 @@ export interface CurvePoint {
   cycle: number;
   specific_capacity: number;
   soh: number;
+  lower?: number;
+  upper?: number;
 }
 
 export interface DatasetItem {
@@ -29,7 +31,9 @@ export interface DatasetItem {
 }
 
 export interface PredictionResult {
+  predicted_eol_cycle?: number;
   predicted_cycle_life: number;
+  remaining_cycles?: number;
   predicted_remaining_life: number;
   prediction_uncertainty_cycles?: number;
   predicted_life_lower?: number;
@@ -37,13 +41,16 @@ export interface PredictionResult {
   soh_at_prediction: number;
   correlation_score: number;
   matched_dataset: DatasetItem;
-  top_matches: Array<DatasetItem & { correlation_score: number }>;
+  top_matches: Array<DatasetItem & { correlation_score?: number; similarity?: number; curve?: CurvePoint[]; cell_id?: number }>;
   input_curve: CurvePoint[];
   predicted_curve: CurvePoint[];
+  soh_curve?: CurvePoint[];
   selected_model_key?: string;
   selected_model_name?: string;
+  model_name?: string;
   model_predicted_life?: number | null;
   xgb_predicted_life?: number | null;
+  warnings?: string[];
 }
 
 export interface HistoryItem {
@@ -57,4 +64,7 @@ export interface HistoryItem {
   correlation_score: number;
   input_curve: CurvePoint[];
   predicted_curve: CurvePoint[];
+  username?: string;
+  model_name?: string;
+  warnings?: string[];
 }

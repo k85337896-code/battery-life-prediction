@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Button, Card, Col, Descriptions, Empty, Form, InputNumber, message, Row, Select, Space, Statistic, Table, Tabs, Tag } from "antd";
+import { Alert, Button, Card, Col, Descriptions, Empty, Form, InputNumber, message, Modal, Progress, Row, Select, Space, Statistic, Table, Tabs, Tag } from "antd";
 import { RefreshCw } from "lucide-react";
 import { api, apiError } from "../api/client";
 import { AuthContext } from "../main";
@@ -20,7 +20,11 @@ export default function ModelInfo() {
   const [models, setModels] = React.useState<any[]>([]);
   const [source, setSource] = React.useState("");
   const [loading, setLoading] = React.useState(false);
+  const [job, setJob] = React.useState<any>(null);
+  const [datasets, setDatasets] = React.useState<any[]>([]);
+  const [form] = Form.useForm();
   const isTeacher = auth.role === "teacher";
+  const selectedChemistry = Form.useWatch("chemistry", form);
 
   async function loadModels() {
     setModels((await api.get("/model-info")).data);
@@ -28,15 +32,19 @@ export default function ModelInfo() {
 
   React.useEffect(() => {
     loadModels().catch((error) => message.error(apiError(error)));
-    api.get("/source", { responseType: "text" }).then((res) => setSource(res.data)).catch(() => undefined);
+    if (isTeacher) {
+      api.get("/datasets").then((res) => setDatasets(res.data)).catch(() => undefined);
+      api.get("/source", { responseType: "text" }).then((res) => setSource(res.data)).catch(() => undefined);
+    }
   }, []);
 
   async function train(values: any) {
     setLoading(true);
     try {
       const { data } = await api.post("/model/train", values);
-      await loadModels();
-      message.success(data.models ? `已重新训练 ${data.models.length} 个模型。` : "模型重训练完成。");
+      setJob(data);
+      message.success("训练任务已提交，正在后台训练。");
+      pollJob(data.job_id);
     } catch (error) {
       message.error(apiError(error));
     } finally {
@@ -44,8 +52,37 @@ export default function ModelInfo() {
     }
   }
 
+  async function pollJob(jobId: string) {
+    const timer = window.setInterval(async () => {
+      try {
+        const { data } = await api.get(`/model/train/${jobId}`);
+        setJob(data);
+        if (["succeeded", "failed"].includes(data.status)) {
+          window.clearInterval(timer);
+          if (data.status === "succeeded") {
+            message.success("模型训练完成。");
+            loadModels();
+          } else {
+            message.error(data.error || "训练失败。");
+          }
+        }
+      } catch (error) {
+        window.clearInterval(timer);
+        message.error(apiError(error));
+      }
+    }, 1800);
+  }
+
+  async function setPublish(modelKey: string, status: "published" | "archived") {
+    await api.post(`/model-info/${modelKey}/publish`, { status });
+    message.success(status === "published" ? "模型已发布。" : "模型已下架。");
+    loadModels();
+  }
+
   const best = [...models].sort((a, b) => (b.metrics?.R2 ?? -999) - (a.metrics?.R2 ?? -999))[0] || {};
   const bestMetrics = best.metrics || {};
+  const chemistries = Array.from(new Set(datasets.map((item) => item.chemistry).filter(Boolean)));
+  const datasetOptions = Array.from(new Set(datasets.filter((item) => !selectedChemistry || item.chemistry === selectedChemistry).map((item) => item.dataset_name).filter(Boolean))).map((value) => ({ value, label: value }));
 
   return (
     <div className="pageStack">
@@ -64,7 +101,9 @@ export default function ModelInfo() {
 
       {isTeacher && (
         <Card title="训练参数编辑" className="controlPanel">
-          <Form layout="inline" initialValues={{ model_key: "xgboost", n_estimators: 80, max_depth: 2, learning_rate: 0.05, training_observation_fraction: 0.1 }} onFinish={train}>
+          <Form form={form} layout="inline" initialValues={{ model_key: "xgboost", n_estimators: 80, max_depth: 2, learning_rate: 0.05, training_observation_fraction: 0.1, publish: true }} onFinish={train}>
+            <Form.Item label="化学体系" name="chemistry" rules={[{ required: true, message: "请选择化学体系" }]}><Select style={{ width: 190 }} options={chemistries.map((value) => ({ value, label: value }))} /></Form.Item>
+            <Form.Item label="数据来源" name="dataset_ids" rules={[{ required: true, message: "请选择训练数据集" }]}><Select mode="multiple" maxTagCount="responsive" style={{ width: 260 }} options={datasetOptions} /></Form.Item>
             <Form.Item label="模型" name="model_key"><Select style={{ width: 210 }} options={modelOptions} /></Form.Item>
             <Form.Item label="树数量" name="n_estimators"><InputNumber min={20} max={500} /></Form.Item>
             <Form.Item label="最大深度" name="max_depth"><InputNumber min={2} max={10} /></Form.Item>
@@ -72,6 +111,7 @@ export default function ModelInfo() {
             <Form.Item label="评估前缀" name="training_observation_fraction"><InputNumber min={0.05} max={0.5} step={0.05} /></Form.Item>
             <Button type="primary" htmlType="submit" icon={<RefreshCw size={16} />} loading={loading}>重新训练</Button>
           </Form>
+          {job && <Progress percent={Number(job.progress || 0)} status={job.status === "failed" ? "exception" : job.status === "succeeded" ? "success" : "active"} format={() => job.message || job.status} />}
         </Card>
       )}
 
@@ -94,6 +134,9 @@ export default function ModelInfo() {
           dataSource={models}
           columns={[
             { title: "模型", dataIndex: "model_type" },
+            { title: "版本", render: (_, record) => <Tag>v{record.version || 1}</Tag> },
+            { title: "化学体系", dataIndex: "chemistry" },
+            { title: "状态", render: (_, record) => <Tag color={record.status === "published" ? "green" : "default"}>{record.status === "published" ? "已发布" : "未发布"}</Tag> },
             { title: "训练规模", dataIndex: "training_data_size" },
             { title: "候选样本", render: (_, record) => <Tag>{record.metrics?.["候选样本"] ?? record.training_data_size}</Tag> },
             { title: "排除样本", render: (_, record) => <Tag color={(record.metrics?.["排除样本"] ?? 0) ? "orange" : "green"}>{record.metrics?.["排除样本"] ?? 0}</Tag> },
@@ -114,7 +157,19 @@ export default function ModelInfo() {
             },
             { title: "评估方式", render: (_, record) => <Tag color="blue">{record.metrics?.["评估方式"] || "-"}</Tag> },
             { title: "训练时间", dataIndex: "trained_at" },
+            ...(isTeacher ? [{
+              title: "操作",
+              render: (_: unknown, record: any) => (
+                <Space>
+                  {record.status === "published"
+                    ? <Button danger onClick={() => Modal.confirm({ title: "确认下架该模型？", onOk: () => setPublish(record.model_key, "archived") })}>下架</Button>
+                    : <Button type="primary" onClick={() => setPublish(record.model_key, "published")}>发布</Button>}
+                </Space>
+              ),
+            }] : []),
           ]}
+          scroll={{ x: 1360 }}
+          className="nowrapTable"
         />
       </Card>
 
@@ -162,7 +217,7 @@ export default function ModelInfo() {
               ),
             })),
             ...(models.length ? [] : [{ key: "empty", label: "模型信息", children: <Empty description="教师端训练后显示模型信息" /> }]),
-            { key: "source", label: "训练源码", children: <pre className="sourceBlock">{source}</pre> },
+            ...(isTeacher ? [{ key: "source", label: "训练源码", children: <pre className="sourceBlock">{source}</pre> }] : []),
           ]}
         />
       </Card>

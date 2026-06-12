@@ -5,26 +5,28 @@ import { api, apiError } from "../api/client";
 import { CurveChart } from "../components/Chart";
 import type { HistoryItem } from "../types";
 
-export default function History() {
+export default function History({ scope = "mine" }: { scope?: "mine" | "all" }) {
   const [items, setItems] = React.useState<HistoryItem[]>([]);
   const [keyword, setKeyword] = React.useState("");
   const [active, setActive] = React.useState<HistoryItem | null>(null);
 
   async function load() {
     try {
-      setItems((await api.get("/history")).data);
+      setItems((await api.get("/history", { params: { scope } })).data);
     } catch (error) {
       message.error(apiError(error));
     }
   }
-  React.useEffect(() => { load(); }, []);
+  React.useEffect(() => { load(); }, [scope]);
 
   const filtered = items.filter((item) => JSON.stringify(item).includes(keyword));
   return (
-    <Card title="历史记录" extra={<Input.Search placeholder="搜索类型、时间或数值" onSearch={setKeyword} allowClear onChange={(e) => setKeyword(e.target.value)} />}>
+    <Card title={scope === "all" ? "学生预测记录" : "我的预测记录"} extra={<Input.Search placeholder="搜索类型、时间或数值" onSearch={setKeyword} allowClear onChange={(e) => setKeyword(e.target.value)} />}>
       <Table rowKey="id" dataSource={filtered} columns={[
+        ...(scope === "all" ? [{ title: "用户", dataIndex: "username" }] : []),
         { title: "时间", dataIndex: "predict_time" },
         { title: "类型", dataIndex: "battery_type", render: (v) => <Tag color="cyan">{v}</Tag> },
+        { title: "模型", dataIndex: "model_name", render: (v) => v || "-" },
         { title: "额定容量", dataIndex: "rated_capacity" },
         { title: "剩余寿命", dataIndex: "predicted_remaining_life", sorter: (a, b) => a.predicted_remaining_life - b.predicted_remaining_life },
         { title: "SOH", dataIndex: "soh_at_prediction", render: (v) => `${v.toFixed(1)}%`, sorter: (a, b) => a.soh_at_prediction - b.soh_at_prediction },

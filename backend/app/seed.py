@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import DB_PATH
+from .auth import hash_password
 from .database import get_db, init_db, now_iso
 from .services.modeling import train_all_models
 
@@ -31,6 +32,7 @@ def make_curve(battery_type: str, life: int, rated_capacity: float):
 
 def seed(force=False):
     init_db()
+    ensure_demo_users()
     if force and DB_PATH.exists():
         with get_db() as conn:
             conn.execute("DELETE FROM prediction_history")
@@ -90,6 +92,23 @@ def seed(force=False):
     except Exception as exc:
         return {"message": f"种子数据已生成，模型训练暂未完成：{exc}", "count": 78}
     return {"message": "种子数据与模型已生成", "count": 78}
+
+
+def ensure_demo_users():
+    with get_db() as conn:
+        for username, password, role, display_name in (
+            ("teacher_demo", "123456", "teacher", "教师演示账号"),
+            ("student_demo", "123456", "student", "学生演示账号"),
+            ("teacher", "123456", "teacher", "教师演示账号"),
+            ("student", "123456", "student", "学生演示账号"),
+        ):
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO users (username, password_hash, role, display_name, created_at)
+                VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM users WHERE username = ?), ?))
+                """,
+                (username, hash_password(password), role, display_name, username, now_iso()),
+            )
 
 
 if __name__ == "__main__":

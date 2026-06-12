@@ -6,6 +6,7 @@ import numpy as np
 from ..config import EOL_SOH, MODEL_OPTIONS, model_path
 from ..database import get_db, now_iso
 from ..utils import row_to_dict, rows_to_dicts
+from .features import extract_features
 
 
 def _normalized_soh(curve, grid_size=120):
@@ -88,62 +89,30 @@ def _rescale_future_curve(input_curve, matched_curve, matched_life, predicted_li
     return sorted(result, key=lambda point: point["cycle"])
 
 
-def extract_features(battery_type, theoretical_capacity, rated_capacity, c_rate, curve):
-    life_hint = max(point["cycle"] for point in curve)
-    first = curve[0]["specific_capacity"]
-    last = curve[-1]["specific_capacity"]
-    retention = last / first if first else 0
-    slope = (last - first) / max(life_hint, 1)
-    voltage_values = [float(point["voltage_V"]) for point in curve if "voltage_V" in point]
-    current_values = [float(point["current_mA"]) for point in curve if "current_mA" in point]
-    temp_values = [float(point["temperature_C"]) for point in curve if "temperature_C" in point]
-    resistance_values = [float(point["internal_resistance_mOhm"]) for point in curve if "internal_resistance_mOhm" in point]
-    voltage_slope = 0
-    if len(voltage_values) >= 2:
-        voltage_slope = (voltage_values[-1] - voltage_values[0]) / max(life_hint, 1)
-    base_features = {
-        "type_LCO": 1 if battery_type == "LCO" else 0,
-        "type_LFP": 1 if battery_type == "LFP" else 0,
-        "type_LS": 1 if battery_type == "LS" else 0,
-        "type_G1": 1 if battery_type == "G1" else 0,
-        "type_G2": 1 if battery_type == "G2" else 0,
-        "type_G3": 1 if battery_type == "G3" else 0,
-        "type_G4": 1 if battery_type == "G4" else 0,
-        "theoretical_capacity": theoretical_capacity,
-        "rated_capacity": rated_capacity,
-        "c_rate": c_rate,
-        "observed_cycles": life_hint,
-        "initial_capacity": first,
-        "latest_capacity": last,
-        "retention": retention,
-        "early_slope": slope,
-        "voltage_mean": float(np.mean(voltage_values)) if voltage_values else 0,
-        "voltage_min": float(np.min(voltage_values)) if voltage_values else 0,
-        "voltage_max": float(np.max(voltage_values)) if voltage_values else 0,
-        "voltage_slope": voltage_slope,
-        "current_mean_abs": float(np.mean(np.abs(current_values))) if current_values else 0,
-        "temperature_mean": float(np.mean(temp_values)) if temp_values else 0,
-        "internal_resistance_mean": float(np.mean(resistance_values)) if resistance_values else 0,
-        "has_voltage": 1 if voltage_values else 0,
-        "has_current": 1 if current_values else 0,
-        "has_temperature": 1 if temp_values else 0,
-        "has_internal_resistance": 1 if resistance_values else 0,
-    }
-    sampled_soh = _normalized_soh(curve, grid_size=16)
-    for index, value in enumerate(sampled_soh):
-        base_features[f"seq_soh_{index:02d}"] = float(value)
-    return base_features
-
-
-def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rate, curve, model_key="xgboost"):
+def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rate, curve, model_key="xgboost", username="student_demo", extra_features=None, chemistry=None):
+    warnings = []
+    if len(curve) < 50:
+        warnings.append("上传循环数偏少，预测不确定性较高。")
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM battery_dataset WHERE battery_type = ? ORDER BY id DESC",
-            (battery_type,),
-        ).fetchall()
+        if chemistry:
+            rows = conn.execute(
+                "SELECT * FROM battery_dataset WHERE chemistry = ? ORDER BY id DESC",
+                (chemistry,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM battery_dataset WHERE battery_type = ? ORDER BY id DESC",
+                (battery_type,),
+            ).fetchall()
+        model_row = conn.execute(
+            "SELECT * FROM model_info WHERE model_key = ? AND status = 'published'",
+            (model_key,),
+        ).fetchone()
 
     if not rows:
-        raise ValueError("数据库中没有同类型电池条目，请先导入或生成种子数据。")
+        raise ValueError("数据库中没有匹配化学体系/类型的电池条目，请先导入训练数据。")
+    if not model_row:
+        raise ValueError("所选模型不存在或尚未发布，请选择教师已发布的模型。")
 
     ranked = []
     for row in rows:
@@ -155,11 +124,15 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
     best_score, best = ranked[0]
     top_matches = [
         {
+            "cell_id": item["id"],
             "id": item["id"],
             "battery_type": item["battery_type"],
+            "cell_name": item.get("cell_name"),
             "cycle_life": item["cycle_life"],
             "rated_capacity": item["rated_capacity"],
+            "similarity": round(score, 4),
             "correlation_score": round(score, 4),
+            "curve": item["capacity_curve"],
             "capacity_curve": item["capacity_curve"],
         }
         for score, item in ranked[:3]
@@ -176,7 +149,7 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
         if path.exists():
             model_payload = joblib.load(path)
             feature_names = model_payload["feature_names"]
-            features = extract_features(battery_type, theoretical_capacity, rated_capacity, c_rate, curve)
+            features = extract_features(battery_type, theoretical_capacity, rated_capacity, c_rate, curve, extra_features)
             model_prediction = round(float(model_payload["model"].predict([[features[name] for name in feature_names]])[0]), 0)
             prediction_uncertainty = model_payload.get("uncertainty_cycles")
     except Exception:
@@ -188,23 +161,44 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
         prediction_uncertainty = max(30, int(abs(best["cycle_life"] - predicted_cycle_life) * 0.5))
     prediction_uncertainty = int(round(float(prediction_uncertainty)))
     predicted_curve = _rescale_future_curve(curve, best["capacity_curve"], best["cycle_life"], predicted_cycle_life, rated_capacity)
+    if best_score < 0.55:
+        warnings.append("上传数据与训练分布差异较大，请谨慎参考预测结果。")
+    lower_life = max(predicted_cycle_life - prediction_uncertainty, current_cycle)
+    upper_life = predicted_cycle_life + prediction_uncertainty
+    soh_curve = []
+    for point in predicted_curve:
+        cycle = point["cycle"]
+        width = max(2, prediction_uncertainty / max(predicted_cycle_life, 1) * 20)
+        if cycle <= current_cycle:
+            lower = upper = point["soh"]
+        else:
+            progress = (cycle - current_cycle) / max(predicted_cycle_life - current_cycle, 1)
+            lower = max(point["soh"] - width * progress, 0)
+            upper = min(point["soh"] + width * progress, 120)
+        soh_curve.append({"cycle": cycle, "soh": round(point["soh"], 4), "lower": round(lower, 4), "upper": round(upper, 4)})
+    model_name = model_row["model_type"]
 
     result = {
+        "predicted_eol_cycle": predicted_cycle_life,
         "predicted_cycle_life": predicted_cycle_life,
+        "remaining_cycles": remaining_life,
         "predicted_remaining_life": remaining_life,
         "prediction_uncertainty_cycles": prediction_uncertainty,
-        "predicted_life_lower": max(predicted_cycle_life - prediction_uncertainty, current_cycle),
-        "predicted_life_upper": predicted_cycle_life + prediction_uncertainty,
+        "predicted_life_lower": lower_life,
+        "predicted_life_upper": upper_life,
         "soh_at_prediction": round(float(current_soh), 2),
         "correlation_score": round(best_score, 4),
         "matched_dataset": best,
         "top_matches": top_matches,
         "input_curve": curve,
         "predicted_curve": predicted_curve,
+        "soh_curve": soh_curve,
         "selected_model_key": model_key,
-        "selected_model_name": MODEL_OPTIONS.get(model_key, model_key),
+        "selected_model_name": model_name,
+        "model_name": model_name,
         "model_predicted_life": model_prediction,
         "xgb_predicted_life": model_prediction if model_key == "xgboost" else None,
+        "warnings": warnings,
     }
 
     with get_db() as conn:
@@ -213,8 +207,8 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
             INSERT INTO prediction_history (
                 predict_time, battery_type, rated_capacity, predicted_remaining_life,
                 soh_at_prediction, matched_dataset_id, correlation_score,
-                input_summary, input_curve, predicted_curve
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                input_summary, input_curve, predicted_curve, username, model_key, model_name, warnings
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now_iso(),
@@ -235,6 +229,10 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
                 ),
                 json.dumps(curve, ensure_ascii=False),
                 json.dumps(predicted_curve, ensure_ascii=False),
+                username,
+                model_key,
+                model_name,
+                json.dumps(warnings, ensure_ascii=False),
             ),
         )
 

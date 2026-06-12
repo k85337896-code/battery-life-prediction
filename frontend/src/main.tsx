@@ -9,11 +9,14 @@ import Predict from "./pages/Predict";
 import Datasets from "./pages/Datasets";
 import ModelInfo from "./pages/ModelInfo";
 import ModelManage from "./pages/ModelManage";
+import History from "./pages/History";
 import "./styles.css";
 
 export interface AuthState {
   role: "student" | "teacher" | null;
   name: string;
+  username?: string;
+  token?: string;
 }
 
 export const AuthContext = React.createContext<{
@@ -33,11 +36,15 @@ function Router() {
   const [auth, setAuthState] = useState<AuthState>({
     role: (localStorage.getItem("role") as AuthState["role"]) || null,
     name: localStorage.getItem("name") || "",
+    username: localStorage.getItem("username") || "",
+    token: localStorage.getItem("token") || "",
   });
   const setAuth = (next: AuthState) => {
     if (next.role) {
       localStorage.setItem("role", next.role);
       localStorage.setItem("name", next.name);
+      if (next.username) localStorage.setItem("username", next.username);
+      if (next.token) localStorage.setItem("token", next.token);
     } else {
       localStorage.clear();
       navigate("/login");
@@ -56,7 +63,8 @@ function Router() {
           <Route path="datasets" element={<Datasets />} />
           <Route path="model" element={<ModelInfo />} />
           <Route path="model-manage" element={<Guard teacherOnly><ModelManage /></Guard>} />
-          <Route path="history" element={<Navigate to="/datasets" replace />} />
+          <Route path="history" element={<History />} />
+          <Route path="student-records" element={<Guard teacherOnly><History scope="all" /></Guard>} />
           <Route path="dataset-manage" element={<Navigate to="/datasets" replace />} />
         </Route>
       </Routes>

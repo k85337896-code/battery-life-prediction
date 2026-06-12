@@ -1,4 +1,5 @@
 import json
+import re
 
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -12,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 from ..config import MODEL_OPTIONS, model_path
 from ..database import get_db, now_iso
 from ..utils import row_to_dict
-from .predictor import extract_features
+from .features import extract_features
 
 
 DEFAULT_PARAMS = {
@@ -81,25 +82,50 @@ def _regression_metrics(actual, predicted):
     }
 
 
+def _safe_key(value: str):
+    return re.sub(r"[^A-Za-z0-9_]+", "_", value or "").strip("_")[:40] or "model"
+
+
 def train_model(params=None, model_key="xgboost"):
-    if model_key not in MODEL_OPTIONS:
+    base_model_key = model_key
+    if base_model_key not in MODEL_OPTIONS:
         raise ValueError("不支持的模型类型。")
     clean_params = {}
     raw_params = params or {}
+    dataset_ids = raw_params.get("dataset_ids") or []
+    if isinstance(dataset_ids, str):
+        dataset_ids = [item for item in dataset_ids.split(",") if item]
+    chemistry = raw_params.get("chemistry") or ""
+    publish = bool(raw_params.get("publish", True))
     eval_prefix_fraction = float(raw_params.get("training_observation_fraction", DEFAULT_EVAL_PREFIX_FRACTION))
     eval_prefix_fraction = min(max(eval_prefix_fraction, 0.05), 0.5)
     for key, value in raw_params.items():
         key = PARAM_ALIASES.get(key, key)
-        if value not in (None, "") and key in MODEL_PARAM_KEYS[model_key]:
+        if value not in (None, "") and key in MODEL_PARAM_KEYS[base_model_key]:
             clean_params[key] = value
-    params = {**MODEL_DEFAULTS[model_key], **clean_params}
+    params = {**MODEL_DEFAULTS[base_model_key], **clean_params}
     with get_db() as conn:
         all_rows = conn.execute("SELECT * FROM battery_dataset").fetchall()
         columns = [row["name"] for row in conn.execute("PRAGMA table_info(battery_dataset)").fetchall()]
-        if "training_eligible" in columns:
-            rows = conn.execute("SELECT * FROM battery_dataset WHERE training_eligible = 1").fetchall()
-        else:
-            rows = all_rows
+        filters = ["training_eligible = 1"] if "training_eligible" in columns else ["1 = 1"]
+        values = []
+        if chemistry:
+            filters.append("chemistry = ?")
+            values.append(chemistry)
+        if dataset_ids:
+            placeholders = ",".join("?" for _ in dataset_ids)
+            filters.append(f"dataset_name IN ({placeholders})")
+            values.extend(dataset_ids)
+        rows = conn.execute(f"SELECT * FROM battery_dataset WHERE {' AND '.join(filters)}", values).fetchall()
+        if rows:
+            chemistry = chemistry or (row_to_dict(rows[0]).get("chemistry") or "")
+        version_row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) AS version FROM model_info WHERE base_model_key = ? AND chemistry = ?",
+            (base_model_key, chemistry or "未标注化学成分"),
+        ).fetchone()
+        version = int(version_row["version"] or 0) + 1
+
+    unique_model_key = f"{base_model_key}_v{version}_{_safe_key(chemistry or 'all')}"
 
     if len(rows) < 8:
         raise ValueError("可靠 EOL 训练数据少于 8 条，请先导入更多达到 80% SOH 的电池数据。")
@@ -128,6 +154,7 @@ def train_model(params=None, model_key="xgboost"):
                 item["rated_capacity"],
                 item["c_rate"],
                 item["capacity_curve"][: min(prefix_points, len(item["capacity_curve"]))],
+                item.get("additional_features") or {},
             )
             x.append([features[name] for name in feature_names])
             y.append(item["cycle_life"])
@@ -140,7 +167,7 @@ def train_model(params=None, model_key="xgboost"):
     y_array = np.array(y, dtype=float)
     groups_array = np.array(groups)
     prefix_tags_array = np.array(prefix_tags, dtype=float)
-    model = _build_model(model_key, params)
+    model = _build_model(base_model_key, params)
     window_metrics = {}
     primary_pred = None
     primary_eval_y = None
@@ -150,7 +177,7 @@ def train_model(params=None, model_key="xgboost"):
             predictions = []
             eval_y_values = []
             for train_index, test_index in LeaveOneGroupOut().split(x_array, y_array, groups_array):
-                fold_model = _build_model(model_key, params)
+                fold_model = _build_model(base_model_key, params)
                 fold_model.fit(x_array[train_index], y_array[train_index])
                 eval_candidates = [index for index in test_index if abs(prefix_tags_array[index] - window_fraction) < 1e-9]
                 eval_index = eval_candidates[0] if eval_candidates else test_index[0]
@@ -188,42 +215,49 @@ def train_model(params=None, model_key="xgboost"):
         "预测不确定性": f"默认 ±{round(accuracy_metrics['RMSE'])} 圈",
         "扩展特征": "已使用电压/电流特征；温度/内阻原始数据未提供" ,
     }
+    if len(records) < 30:
+        metrics["样本量警告"] = "样本量过小，指标仅供教学参考"
     joblib.dump(
         {
             "model": model,
             "feature_names": feature_names,
-            "model_key": model_key,
+            "model_key": unique_model_key,
+            "base_model_key": base_model_key,
             "training_mode": "full_curve_prefix_transfer",
             "prefix_fractions": PREFIX_FRACTIONS,
             "uncertainty_cycles": round(accuracy_metrics["RMSE"]),
         },
-        model_path(model_key),
+        model_path(unique_model_key),
     )
 
     with get_db() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO model_info (
+            INSERT INTO model_info (
                 model_key, model_type, training_data_size, metrics, feature_list,
-                hyperparameters, trained_at, source_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                hyperparameters, trained_at, source_path, base_model_key, version,
+                status, dataset_ids, chemistry, visibility
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                model_key,
-                MODEL_OPTIONS[model_key],
+                unique_model_key,
+                MODEL_OPTIONS[base_model_key],
                 len(records),
                 json.dumps(metrics, ensure_ascii=False),
                 json.dumps(feature_names, ensure_ascii=False),
                 json.dumps(params, ensure_ascii=False),
                 now_iso(),
                 "backend/app/services/modeling.py",
+                base_model_key,
+                version,
+                "published" if publish else "draft",
+                json.dumps(dataset_ids, ensure_ascii=False),
+                chemistry or "未标注化学成分",
+                "student" if publish else "teacher",
             ),
         )
-    return {"model_key": model_key, "model_type": MODEL_OPTIONS[model_key], "training_data_size": len(records), "metrics": metrics, "feature_list": feature_names, "hyperparameters": params, "trained_at": now_iso(), "source_path": "backend/app/services/modeling.py"}
+    return {"model_key": unique_model_key, "base_model_key": base_model_key, "model_type": MODEL_OPTIONS[base_model_key], "training_data_size": len(records), "metrics": metrics, "feature_list": feature_names, "hyperparameters": params, "trained_at": now_iso(), "source_path": "backend/app/services/modeling.py", "version": version, "status": "published" if publish else "draft", "chemistry": chemistry or "未标注化学成分"}
 
 
 def train_all_models():
-    placeholders = ",".join("?" for _ in MODEL_OPTIONS)
-    with get_db() as conn:
-        conn.execute(f"DELETE FROM model_info WHERE model_key NOT IN ({placeholders})", tuple(MODEL_OPTIONS.keys()))
     return [train_model(model_key=key) for key in MODEL_OPTIONS]

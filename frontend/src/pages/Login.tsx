@@ -14,7 +14,7 @@ export default function Login() {
     setLoading(true);
     try {
       const { data } = await api.post("/login", values);
-      setAuth({ role: data.role, name: data.name });
+      setAuth({ role: data.role, name: data.name, username: data.username, token: data.token });
       navigate("/predict");
     } catch (error) {
       message.error(apiError(error));
@@ -37,16 +37,16 @@ export default function Login() {
       </section>
       <Card className="loginCard">
         <Typography.Title level={3}>进入系统</Typography.Title>
-        <Form layout="vertical" initialValues={{ username: "student", password: "123456" }} onFinish={submit}>
+        <Form layout="vertical" initialValues={{ username: "student_demo", password: "123456" }} onFinish={submit}>
           <Form.Item label="账号" name="username" rules={[{ required: true, message: "请输入账号" }]}>
-            <Input size="large" placeholder="student / teacher" />
+            <Input size="large" placeholder="student_demo / teacher_demo" />
           </Form.Item>
           <Form.Item label="密码" name="password" rules={[{ required: true, message: "请输入密码" }]}>
             <Input.Password size="large" placeholder="123456" />
           </Form.Item>
           <Button size="large" type="primary" htmlType="submit" block loading={loading}>登录系统</Button>
         </Form>
-        <div className="loginHint">预置账号：student/123456，teacher/123456</div>
+        <div className="loginHint">预置账号：student_demo/123456，teacher_demo/123456</div>
       </Card>
     </main>
   );

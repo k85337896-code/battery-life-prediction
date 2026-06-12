@@ -5,3 +5,4 @@ frontend/node_modules/
 frontend/dist/
 *.png
 *.log
+backend/data/.auth_secret

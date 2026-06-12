@@ -17,6 +17,9 @@ def row_to_dict(row: Row | None) -> dict[str, Any] | None:
         "input_summary",
         "quality_flags",
         "additional_features",
+        "dataset_ids",
+        "result",
+        "warnings",
     ):
         if key in data and isinstance(data[key], str):
             try:

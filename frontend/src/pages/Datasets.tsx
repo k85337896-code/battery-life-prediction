@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Button, Card, Col, Descriptions, Drawer, Input, message, Modal, Row, Space, Table, Tag, Tree } from "antd";
+import { Alert, Button, Card, Col, Descriptions, Drawer, Form, Input, InputNumber, message, Modal, Row, Space, Table, Tag, Tree, Upload } from "antd";
 import { Database, Eye, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 import { api, apiError } from "../api/client";
 import { AuthContext } from "../main";
@@ -39,6 +39,10 @@ export default function Datasets() {
   const [keyword, setKeyword] = React.useState("");
   const [selectedKey, setSelectedKey] = React.useState<string>("");
   const [active, setActive] = React.useState<DatasetItem | null>(null);
+  const [importOpen, setImportOpen] = React.useState(false);
+  const [fileList, setFileList] = React.useState<any[]>([]);
+  const [importing, setImporting] = React.useState(false);
+  const [form] = Form.useForm();
   const isTeacher = auth.role === "teacher";
 
   async function load() {
@@ -81,6 +85,39 @@ export default function Datasets() {
       hide();
       message.error(apiError(error));
     }
+  }
+
+  async function importCsv(values: any) {
+    const file = fileList[0]?.originFileObj;
+    if (!file) return message.warning("请先选择 CSV 文件。");
+    const body = new FormData();
+    body.append("file", file);
+    Object.entries(values).forEach(([key, value]) => body.append(key, String(value)));
+    setImporting(true);
+    try {
+      await api.post("/datasets/import", body, { headers: { "Content-Type": "multipart/form-data" } });
+      message.success("数据集导入成功。");
+      setImportOpen(false);
+      setFileList([]);
+      form.resetFields();
+      load();
+    } catch (error) {
+      message.error(apiError(error));
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function reviewActive(training_eligible: number) {
+    if (!active) return;
+    const next = {
+      training_eligible,
+      label_status: training_eligible ? "可靠EOL" : "教师剔除",
+    };
+    await api.put(`/datasets/${active.id}`, next);
+    message.success(training_eligible ? "已标记为可靠样本。" : "已剔除出训练集。");
+    setActive({ ...active, ...next });
+    load();
   }
 
   return (
@@ -132,13 +169,16 @@ export default function Datasets() {
               <Space>
                 <Input.Search placeholder="搜索组别、数据集、文件名" allowClear onSearch={setKeyword} onChange={(e) => setKeyword(e.target.value)} />
                 <Button icon={<RefreshCw size={16} />} onClick={load}>刷新</Button>
+                {isTeacher && <Button icon={<UploadCloud size={16} />} onClick={() => setImportOpen(true)}>导入时序 CSV</Button>}
                 {isTeacher && <Button type="primary" icon={<UploadCloud size={16} />} onClick={importRealDataset}>导入真实数据集并训练</Button>}
               </Space>
             }
           >
             <Table
+              className="nowrapTable"
               rowKey="id"
               dataSource={filtered}
+              scroll={{ x: 1280 }}
               columns={[
                 { title: "化学成分", dataIndex: "chemistry", render: (v) => <Tag color="cyan">{v || "未标注"}</Tag> },
                 { title: "数据集", dataIndex: "dataset_name" },
@@ -187,6 +227,12 @@ export default function Datasets() {
       <Drawer title={active?.cell_name || active?.note || "电池曲线"} open={!!active} onClose={() => setActive(null)} width={820}>
         {active && (
           <Space direction="vertical" size={16} className="full">
+            {isTeacher && (
+              <Space>
+                <Button type="primary" onClick={() => reviewActive(1)}>标记可靠</Button>
+                <Button danger onClick={() => Modal.confirm({ title: "确认剔除该样本？", content: "剔除后该电池仍保留在数据库，但不会参与默认训练。", onOk: () => reviewActive(0) })}>剔除样本</Button>
+              </Space>
+            )}
             <Descriptions bordered size="small" column={2}>
               <Descriptions.Item label="标签质量">{active.label_status || "未评估"}</Descriptions.Item>
               <Descriptions.Item label="训练用途">{Number(active.training_eligible ?? 1) === 1 ? "参与训练" : "仅入库，不参与默认训练"}</Descriptions.Item>
@@ -198,6 +244,30 @@ export default function Datasets() {
           </Space>
         )}
       </Drawer>
+
+      <Modal title="导入长表时序 CSV" open={importOpen} onCancel={() => setImportOpen(false)} footer={null}>
+        <Form form={form} layout="vertical" onFinish={importCsv}>
+          <Form.Item label="化学体系" name="chemistry" rules={[{ required: true, message: "请输入或选择化学体系" }]}>
+            <Input placeholder="例如 NCM / LFP / 实验组锂离子电池" />
+          </Form.Item>
+          <Form.Item label="数据集名称" name="dataset_name" rules={[{ required: true, message: "请输入数据集名称" }]}>
+            <Input placeholder="例如 Severson 早期循环数据集" />
+          </Form.Item>
+          <Form.Item label="组别/电池类型" name="battery_type" initialValue="G1">
+            <Input placeholder="例如 G1 / LFP" />
+          </Form.Item>
+          <Row gutter={12}>
+            <Col span={12}><Form.Item label="额定容量 (Ah)" name="rated_capacity" rules={[{ required: true }]}><InputNumber className="full" min={0.001} max={10000} step={0.001} /></Form.Item></Col>
+            <Col span={12}><Form.Item label="倍率 (C)" name="c_rate" initialValue={1}><InputNumber className="full" min={0.1} max={5} step={0.1} /></Form.Item></Col>
+          </Row>
+          <Form.Item label="CSV 文件" required>
+            <Upload.Dragger accept=".csv" maxCount={1} beforeUpload={() => false} fileList={fileList} onChange={({ fileList }) => setFileList(fileList)}>
+              <p>上传包含 cycle, time_s, voltage_V, current_A 的长表 CSV</p>
+            </Upload.Dragger>
+          </Form.Item>
+          <Button type="primary" htmlType="submit" loading={importing} block>开始导入</Button>
+        </Form>
+      </Modal>
     </div>
   );
 }

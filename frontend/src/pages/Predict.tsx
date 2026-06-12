@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Button, Card, Col, Form, InputNumber, message, Row, Select, Space, Statistic, Tag, Upload } from "antd";
+import { Alert, Button, Card, Col, Form, InputNumber, message, Row, Select, Skeleton, Space, Statistic, Tag, Upload } from "antd";
 import { Download, FileUp, Gauge, Play, Sparkles } from "lucide-react";
 import type { UploadFile } from "antd";
 import { useNavigate } from "react-router-dom";
@@ -13,18 +13,25 @@ export default function Predict() {
   const [fileList, setFileList] = React.useState<UploadFile[]>([]);
   const [result, setResult] = React.useState<PredictionResult | null>(null);
   const [loading, setLoading] = React.useState(false);
-  const [modelOptions, setModelOptions] = React.useState<Array<{ value: string; label: string }>>([]);
-  const [batteryOptions, setBatteryOptions] = React.useState<Array<{ value: string; label: string }>>([]);
+  const [models, setModels] = React.useState<Array<{ model_key: string; model_type: string; chemistry: string; version: number }>>([]);
+  const [chemistries, setChemistries] = React.useState<string[]>([]);
+  const [errorText, setErrorText] = React.useState("");
   const isTeacher = localStorage.getItem("role") === "teacher";
   const [form] = Form.useForm();
 
   React.useEffect(() => {
     api.get("/meta").then((res) => {
-      const options = Object.entries(res.data.model_options || {}).map(([value, label]) => ({ value, label: String(label) }));
-      setModelOptions(options);
-      setBatteryOptions(Object.entries(res.data.battery_types || {}).map(([value, label]) => ({ value, label: `${value} ${label}` })));
+      const nextChemistries = res.data.chemistries || [];
+      setChemistries(nextChemistries);
+      if (!form.getFieldValue("chemistry") && nextChemistries[0]) form.setFieldValue("chemistry", nextChemistries[0]);
+      api.get("/models/published").then((modelRes) => setModels(modelRes.data || []));
     });
   }, []);
+
+  const selectedChemistry = Form.useWatch("chemistry", form);
+  const modelOptions = models
+    .filter((model) => !selectedChemistry || model.chemistry === selectedChemistry)
+    .map((model) => ({ value: model.model_key, label: `${model.model_type} v${model.version}` }));
 
   async function submit(values: any) {
     const file = fileList[0]?.originFileObj;
@@ -33,12 +40,15 @@ export default function Predict() {
     body.append("file", file);
     Object.entries(values).forEach(([key, value]) => body.append(key, String(value)));
     setLoading(true);
+    setErrorText("");
     try {
       const { data } = await api.post("/predict", body, { headers: { "Content-Type": "multipart/form-data" } });
       setResult(data);
       message.success("预测完成，历史记录已保存。");
     } catch (error) {
-      message.error(apiError(error));
+      const text = apiError(error);
+      setErrorText(text);
+      message.error(text);
     } finally {
       setLoading(false);
     }
@@ -46,7 +56,7 @@ export default function Predict() {
 
   function exportCsv() {
     if (!result) return;
-    const rows = ["cycle,specific_capacity,soh", ...result.predicted_curve.map((p) => `${p.cycle},${p.specific_capacity},${p.soh}`)];
+    const rows = ["cycle,soh,lower,upper", ...(result.soh_curve || result.predicted_curve).map((p) => `${p.cycle},${p.soh},${p.lower ?? ""},${p.upper ?? ""}`)];
     const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -62,7 +72,7 @@ export default function Predict() {
         <div>
           <span className="pageKicker"><Sparkles size={15} /> Battery Life Prediction</span>
           <h1>寿命预测工作台</h1>
-          <p>上传循环容量数据，系统会先进行同类型曲线匹配，再调用所选机器学习模型给出直接预测结果。</p>
+          <p>上传单块电池的电压/电流长表时序，系统提取早期特征并输出完整 SOH 衰减曲线与 EOL。</p>
         </div>
         <div className="heroActions">
           {isTeacher && <Button size="large" onClick={() => navigate("/model-manage")}>去训练模型</Button>}
@@ -77,25 +87,30 @@ export default function Predict() {
       <Row gutter={[18, 18]} align="stretch">
         <Col xs={24} xl={9}>
           <Card className="controlPanel" title="输入参数">
-            <Form form={form} layout="vertical" initialValues={{ battery_type: "G1", theoretical_capacity: 4, rated_capacity: 4, c_rate: 1, model_key: "xgboost" }} onFinish={submit}>
+            <Form form={form} layout="vertical" initialValues={{ chemistry: chemistries[0], rated_capacity: 4, c_rate: 1 }} onFinish={submit}>
               <Form.Item label="循环数据 CSV" required>
-                <Upload.Dragger className="uploadBox" accept=".csv" maxCount={1} beforeUpload={() => false} fileList={fileList} onChange={({ fileList }) => setFileList(fileList)}>
+                <Upload.Dragger className="uploadBox" accept=".csv" maxCount={1} beforeUpload={(file) => {
+                  if (file.size > 20 * 1024 * 1024) {
+                    message.error("CSV 文件不能超过 20MB。");
+                    return Upload.LIST_IGNORE;
+                  }
+                  return false;
+                }} fileList={fileList} onChange={({ fileList }) => setFileList(fileList)}>
                   <FileUp size={30} />
                   <p>拖拽或点击上传 CSV</p>
-                  <span>至少包含 cycle 与 capacity/specific_capacity 列</span>
+                  <span>必需列：cycle, time_s, voltage_V, current_A；可选 capacity_Ah, temperature_C</span>
                 </Upload.Dragger>
               </Form.Item>
-              <Form.Item label="电池类型" name="battery_type" rules={[{ required: true }]}>
-                <Select size="large" options={batteryOptions} />
+              <Form.Item label="化学体系" name="chemistry" rules={[{ required: true, message: "请选择化学体系" }]}>
+                <Select size="large" options={chemistries.map((value) => ({ value, label: value }))} onChange={() => form.setFieldValue("model_key", undefined)} />
               </Form.Item>
               <Row gutter={12}>
-                <Col span={12}><Form.Item label="理论容量" name="theoretical_capacity" rules={[{ required: true }]}><InputNumber size="large" min={1} className="full" /></Form.Item></Col>
-                <Col span={12}><Form.Item label="额定容量" name="rated_capacity" rules={[{ required: true }]}><InputNumber size="large" min={1} className="full" /></Form.Item></Col>
-              </Row>
-              <Row gutter={12}>
+                <Col span={12}><Form.Item label="额定容量 (Ah)" name="rated_capacity" rules={[{ required: true, message: "请输入额定容量" }]}><InputNumber size="large" min={0.001} max={10000} step={0.001} className="full" /></Form.Item></Col>
                 <Col span={12}><Form.Item label="倍率 (C)" name="c_rate" rules={[{ required: true }]}><InputNumber size="large" min={0.1} max={5} step={0.1} className="full" /></Form.Item></Col>
-                <Col span={12}><Form.Item label="预测模型" name="model_key" rules={[{ required: true }]}><Select size="large" options={modelOptions} /></Form.Item></Col>
               </Row>
+              <Form.Item label="选择模型" name="model_key" rules={[{ required: true, message: "请选择教师已发布模型" }]}>
+                <Select size="large" options={modelOptions} placeholder={selectedChemistry ? "选择已发布模型" : "先选择化学体系"} />
+              </Form.Item>
               <Button className="primaryAction" type="primary" htmlType="submit" icon={<Play size={16} />} loading={loading} block>开始预测</Button>
             </Form>
           </Card>
@@ -103,12 +118,14 @@ export default function Predict() {
 
         <Col xs={24} xl={15}>
           <div className="resultGrid">
+            {loading && <Skeleton active paragraph={{ rows: 8 }} />}
+            {errorText && <Alert className="sohPanel" type="error" showIcon message="预测失败" description={errorText} />}
             <Card className="resultCard highlightMetric">
-              <Statistic title="预测循环寿命" value={result?.predicted_cycle_life ?? "-"} suffix={result ? "次" : ""} />
+              <Statistic title="预测 EOL" value={result?.predicted_eol_cycle ?? result?.predicted_cycle_life ?? "-"} suffix={result ? "次" : ""} />
               <Tag color="cyan">早期曲线外推</Tag>
             </Card>
             <Card className="resultCard">
-              <Statistic title="预测剩余寿命" value={result?.predicted_remaining_life ?? "-"} suffix={result ? "次" : ""} />
+              <Statistic title="预测剩余寿命" value={result?.remaining_cycles ?? result?.predicted_remaining_life ?? "-"} suffix={result ? "次" : ""} />
               <Tag color="blue">扣除当前循环</Tag>
             </Card>
             <Card className="resultCard">
@@ -120,6 +137,10 @@ export default function Predict() {
               <Tag color="purple">ML 对照结果</Tag>
             </Card>
           </div>
+
+          {!!result?.warnings?.length && (
+            <Alert className="sohPanel" type="warning" showIcon message="预测提示" description={result.warnings.join("；")} />
+          )}
 
           {result?.prediction_uncertainty_cycles && (
             <Alert
@@ -137,9 +158,9 @@ export default function Predict() {
         </Col>
       </Row>
 
-      <Card className="chartPanel" title="比容量衰减曲线" extra={<Button icon={<Download size={16} />} onClick={exportCsv} disabled={!result}>导出数据</Button>}>
+      <Card className="chartPanel" title="SOH 寿命曲线" extra={<Button icon={<Download size={16} />} onClick={exportCsv} disabled={!result}>导出数据</Button>}>
         {result ? (
-          <CurveChart input={result.input_curve} predicted={result.predicted_curve} matches={result.top_matches} height={430} />
+          <CurveChart input={result.input_curve} predicted={result.predicted_curve} sohCurve={result.soh_curve} matches={result.top_matches} height={430} />
         ) : (
           <div className="chartPlaceholder">上传示例 CSV 并点击「开始预测」后，曲线对比图将在这里生成。</div>
         )}

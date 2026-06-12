@@ -1,42 +1,77 @@
 import ReactECharts from "echarts-for-react";
 import type { CurvePoint, DatasetItem } from "../types";
 
+type MatchItem = DatasetItem & { cell_id?: number; curve?: CurvePoint[]; similarity?: number; correlation_score?: number };
+
 interface Props {
   input?: CurvePoint[];
   predicted?: CurvePoint[];
-  matches?: DatasetItem[];
+  matches?: MatchItem[];
+  sohCurve?: CurvePoint[];
+  eol?: number;
   height?: number;
 }
 
-export function CurveChart({ input = [], predicted = [], matches = [], height = 360 }: Props) {
+export function CurveChart({ input = [], predicted = [], matches = [], sohCurve, eol = 80, height = 360 }: Props) {
+  const curve = sohCurve?.length ? sohCurve : predicted;
+  const currentCycle = input.length ? Math.max(...input.map((p) => p.cycle)) : 0;
   const series = [
     input.length
       ? {
-          name: "输入曲线",
+          name: "实测 SOH",
           type: "line",
           smooth: true,
           symbol: "none",
-          data: input.map((p) => [p.cycle, p.specific_capacity]),
+          data: input.map((p) => [p.cycle, p.soh]),
           lineStyle: { width: 3, color: "#0f766e" },
         }
       : null,
-    predicted.length
+    curve.length
       ? {
-          name: "最佳匹配",
+          name: "预测 SOH",
           type: "line",
           smooth: true,
           symbol: "none",
-          data: predicted.map((p) => [p.cycle, p.specific_capacity]),
-          lineStyle: { width: 3, color: "#2563eb" },
+          data: curve.filter((p) => p.cycle >= currentCycle).map((p) => [p.cycle, p.soh]),
+          lineStyle: { width: 3, color: "#2563eb", type: "dashed" },
+          markLine: {
+            symbol: "none",
+            data: [{ yAxis: eol, name: "EOL 80%" }],
+            label: { formatter: "EOL 80%" },
+            lineStyle: { color: "#ef4444", type: "dashed" },
+          },
+        }
+      : null,
+    curve.some((p) => p.lower !== undefined && p.upper !== undefined)
+      ? {
+          name: "置信下界",
+          type: "line",
+          smooth: true,
+          symbol: "none",
+          data: curve.map((p) => [p.cycle, p.lower ?? p.soh]),
+          lineStyle: { opacity: 0 },
+          stack: "confidence",
+        }
+      : null,
+    curve.some((p) => p.lower !== undefined && p.upper !== undefined)
+      ? {
+          name: "置信区间",
+          type: "line",
+          smooth: true,
+          symbol: "none",
+          data: curve.map((p) => [p.cycle, Math.max((p.upper ?? p.soh) - (p.lower ?? p.soh), 0)]),
+          lineStyle: { opacity: 0 },
+          areaStyle: { color: "rgba(37, 99, 235, 0.16)" },
+          stack: "confidence",
         }
       : null,
     ...matches.map((item) => ({
-      name: `Top ${item.id}`,
+      name: item.cell_name || `Top ${item.cell_id || item.id}`,
       type: "line",
       smooth: true,
       symbol: "none",
-      data: item.capacity_curve.map((p) => [p.cycle, p.specific_capacity]),
-      lineStyle: { width: 1.5, type: "dashed" },
+      data: (item.curve || item.capacity_curve || []).map((p: CurvePoint) => [p.cycle, p.soh]),
+      lineStyle: { width: 1.2, opacity: 0.36 },
     })),
   ].filter(Boolean);
 
@@ -46,11 +81,15 @@ export function CurveChart({ input = [], predicted = [], matches = [], height = 
       option={{
         color: ["#0f766e", "#2563eb", "#f59e0b", "#7c3aed", "#dc2626"],
         tooltip: { trigger: "axis" },
-        toolbox: { feature: { saveAsImage: { title: "导出图片" }, dataZoom: { title: { zoom: "缩放", back: "还原" } }, restore: { title: "还原" } } },
-        legend: { top: 0 },
-        grid: { top: 56, left: 62, right: 32, bottom: 48 },
-        xAxis: { type: "value", name: "循环次数", nameLocation: "middle", nameGap: 30 },
-        yAxis: { type: "value", name: "比容量 (mAh·g⁻¹)", nameLocation: "middle", nameGap: 48 },
+        toolbox: { top: 0, right: 8, feature: { saveAsImage: { title: "导出图片" }, dataZoom: { title: { zoom: "缩放", back: "还原" } }, restore: { title: "还原" } } },
+        legend: { type: "scroll", top: 34, left: 8, right: 8 },
+        grid: { top: 82, left: 62, right: 32, bottom: 70 },
+        dataZoom: [
+          { type: "inside", xAxisIndex: 0 },
+          { type: "slider", xAxisIndex: 0, height: 18, bottom: 18 },
+        ],
+        xAxis: { type: "value", min: 0, name: "循环次数", nameLocation: "middle", nameGap: 46 },
+        yAxis: { type: "value", name: "SOH (%)", min: 50, max: 110, nameLocation: "middle", nameGap: 48 },
         series,
       }}
     />
@@ -80,6 +119,8 @@ export function DatasetSohChart({ items, height = 460 }: DatasetSohChartProps) {
           valueFormatter: (value: number) => `${Number(value).toFixed(2)}%`,
         },
         toolbox: {
+          top: 0,
+          right: 8,
           feature: {
             saveAsImage: { title: "导出图片" },
             dataZoom: { title: { zoom: "缩放", back: "还原" } },
@@ -88,21 +129,23 @@ export function DatasetSohChart({ items, height = 460 }: DatasetSohChartProps) {
         },
         legend: {
           type: "scroll",
-          top: 0,
+          top: 36,
+          left: 8,
+          right: 8,
           pageIconColor: "#0f766e",
           pageTextStyle: { color: "#475569" },
         },
-        grid: { top: 72, left: 62, right: 34, bottom: 54 },
+        grid: { top: 92, left: 62, right: 34, bottom: 76 },
         dataZoom: [
           { type: "inside", xAxisIndex: 0 },
-          { type: "slider", xAxisIndex: 0, height: 18, bottom: 12 },
+          { type: "slider", xAxisIndex: 0, height: 18, bottom: 18 },
         ],
-        xAxis: { type: "value", name: "循环次数", nameLocation: "middle", nameGap: 34 },
+        xAxis: { type: "value", min: 0, name: "循环次数", nameLocation: "middle", nameGap: 48 },
         yAxis: {
           type: "value",
           name: "SOH (%)",
-          min: (value: { min: number }) => Math.max(Math.floor(value.min - 3), 0),
-          max: (value: { max: number }) => Math.ceil(value.max + 3),
+          min: (value: { min: number }) => Math.max(Math.floor((value.min - 3) / 10) * 10, 0),
+          max: (value: { max: number }) => Math.ceil((value.max + 3) / 10) * 10,
           nameLocation: "middle",
           nameGap: 44,
         },

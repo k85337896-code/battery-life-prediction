@@ -42,6 +42,15 @@ def init_db():
                 additional_features TEXT NOT NULL DEFAULT '{}'
             );
 
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('teacher', 'student')),
+                display_name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS prediction_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 predict_time TEXT NOT NULL,
@@ -67,28 +76,54 @@ def init_db():
                 trained_at TEXT NOT NULL,
                 source_path TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS training_jobs (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                result TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
-        columns = [row["name"] for row in conn.execute("PRAGMA table_info(model_info)").fetchall()]
-        if "model_key" not in columns:
-            conn.execute("ALTER TABLE model_info ADD COLUMN model_key TEXT NOT NULL DEFAULT 'xgboost'")
-        dataset_columns = [row["name"] for row in conn.execute("PRAGMA table_info(battery_dataset)").fetchall()]
-        if "chemistry" not in dataset_columns:
-            conn.execute("ALTER TABLE battery_dataset ADD COLUMN chemistry TEXT NOT NULL DEFAULT '未标注化学成分'")
-        if "dataset_name" not in dataset_columns:
-            conn.execute("ALTER TABLE battery_dataset ADD COLUMN dataset_name TEXT NOT NULL DEFAULT '演示数据集'")
-        if "cell_name" not in dataset_columns:
-            conn.execute("ALTER TABLE battery_dataset ADD COLUMN cell_name TEXT NOT NULL DEFAULT ''")
-        if "label_status" not in dataset_columns:
-            conn.execute("ALTER TABLE battery_dataset ADD COLUMN label_status TEXT NOT NULL DEFAULT '未评估'")
-        if "training_eligible" not in dataset_columns:
-            conn.execute("ALTER TABLE battery_dataset ADD COLUMN training_eligible INTEGER NOT NULL DEFAULT 1")
-        if "quality_flags" not in dataset_columns:
-            conn.execute("ALTER TABLE battery_dataset ADD COLUMN quality_flags TEXT NOT NULL DEFAULT '[]'")
-        if "capacity_baseline" not in dataset_columns:
-            conn.execute("ALTER TABLE battery_dataset ADD COLUMN capacity_baseline REAL")
-        if "additional_features" not in dataset_columns:
-            conn.execute("ALTER TABLE battery_dataset ADD COLUMN additional_features TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(conn, "model_info", "model_key", "TEXT NOT NULL DEFAULT 'xgboost'")
+        ensure_column(conn, "model_info", "base_model_key", "TEXT NOT NULL DEFAULT 'xgboost'")
+        ensure_column(conn, "model_info", "version", "INTEGER NOT NULL DEFAULT 1")
+        ensure_column(conn, "model_info", "status", "TEXT NOT NULL DEFAULT 'published'")
+        ensure_column(conn, "model_info", "dataset_ids", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(conn, "model_info", "chemistry", "TEXT NOT NULL DEFAULT '未标注化学成分'")
+        ensure_column(conn, "model_info", "visibility", "TEXT NOT NULL DEFAULT 'teacher'")
+        ensure_column(conn, "battery_dataset", "chemistry", "TEXT NOT NULL DEFAULT '未标注化学成分'")
+        ensure_column(conn, "battery_dataset", "dataset_name", "TEXT NOT NULL DEFAULT '演示数据集'")
+        ensure_column(conn, "battery_dataset", "cell_name", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "battery_dataset", "label_status", "TEXT NOT NULL DEFAULT '未评估'")
+        ensure_column(conn, "battery_dataset", "training_eligible", "INTEGER NOT NULL DEFAULT 1")
+        ensure_column(conn, "battery_dataset", "quality_flags", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(conn, "battery_dataset", "capacity_baseline", "REAL")
+        ensure_column(conn, "battery_dataset", "additional_features", "TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(conn, "prediction_history", "username", "TEXT NOT NULL DEFAULT 'student_demo'")
+        ensure_column(conn, "prediction_history", "model_key", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "prediction_history", "model_name", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "prediction_history", "warnings", "TEXT NOT NULL DEFAULT '[]'")
+        conn.execute(
+            """
+            UPDATE model_info
+            SET base_model_key = model_key
+            WHERE model_key IN ('xgboost', 'lstm', 'tcn', 'cnn', 'gpr')
+              AND base_model_key = 'xgboost'
+            """
+        )
+        conn.execute("UPDATE battery_dataset SET chemistry = '实验组锂离子电池' WHERE chemistry = '未标注化学成分'")
+        conn.execute("UPDATE model_info SET chemistry = '实验组锂离子电池' WHERE chemistry = '未标注化学成分'")
+
+
+def ensure_column(conn, table: str, column: str, definition: str):
+    columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def now_iso() -> str:
