@@ -116,8 +116,8 @@ def init_db():
               AND base_model_key = 'xgboost'
             """
         )
-        conn.execute("UPDATE battery_dataset SET chemistry = '实验组锂离子电池' WHERE chemistry = '未标注化学成分'")
-        conn.execute("UPDATE model_info SET chemistry = '实验组锂离子电池' WHERE chemistry = '未标注化学成分'")
+        conn.execute("UPDATE battery_dataset SET chemistry = '实验组锂金属电池' WHERE chemistry IN ('未标注化学成分', '实验组锂离子电池')")
+        conn.execute("UPDATE model_info SET chemistry = '实验组锂金属电池' WHERE chemistry IN ('未标注化学成分', '实验组锂离子电池')")
 
 
 def ensure_column(conn, table: str, column: str, definition: str):

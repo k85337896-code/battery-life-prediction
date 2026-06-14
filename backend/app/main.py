@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import BATTERY_TYPES, MODEL_OPTIONS
 from .database import get_db, init_db, now_iso
-from .auth import create_token, current_user, require_teacher, verify_password
+from .auth import create_token, current_user, hash_password, require_teacher, verify_password
 from .import_real_dataset import import_real_dataset
 from .seed import seed
 from .services.features import parse_timeseries_csv
@@ -160,6 +160,95 @@ def delete_history(history_id: int, user: dict = Depends(current_user)):
             conn.execute("DELETE FROM prediction_history WHERE id = ?", (history_id,))
         else:
             conn.execute("DELETE FROM prediction_history WHERE id = ? AND username = ?", (history_id, user["username"]))
+    return {"ok": True}
+
+
+@app.get("/api/users", dependencies=[Depends(require_teacher)])
+def list_users(role: str = "student"):
+    with get_db() as conn:
+        if role in {"student", "teacher"}:
+            rows = conn.execute(
+                """
+                SELECT u.id, u.username, u.role, u.display_name, u.created_at,
+                       COUNT(h.id) AS prediction_count,
+                       MAX(h.predict_time) AS last_prediction_at
+                FROM users u
+                LEFT JOIN prediction_history h ON h.username = u.username
+                WHERE u.role = ?
+                GROUP BY u.id
+                ORDER BY u.created_at DESC
+                """,
+                (role,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT u.id, u.username, u.role, u.display_name, u.created_at,
+                       COUNT(h.id) AS prediction_count,
+                       MAX(h.predict_time) AS last_prediction_at
+                FROM users u
+                LEFT JOIN prediction_history h ON h.username = u.username
+                GROUP BY u.id
+                ORDER BY u.created_at DESC
+                """
+            ).fetchall()
+    return rows_to_dicts(rows)
+
+
+@app.post("/api/users", dependencies=[Depends(require_teacher)])
+def create_user(payload: dict):
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "")).strip()
+    role = str(payload.get("role", "student")).strip()
+    display_name = str(payload.get("display_name", username)).strip() or username
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="账号和密码不能为空。")
+    if role not in {"student", "teacher"}:
+        raise HTTPException(status_code=400, detail="角色只能是 student 或 teacher。")
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO users (username, password_hash, role, display_name, created_at) VALUES (?, ?, ?, ?, ?)",
+                (username, hash_password(password), role, display_name, now_iso()),
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="账号已存在或数据不合法。") from exc
+    return {"ok": True}
+
+
+@app.put("/api/users/{username}", dependencies=[Depends(require_teacher)])
+def update_user(username: str, payload: dict):
+    sets = []
+    values = []
+    if "display_name" in payload:
+        sets.append("display_name = ?")
+        values.append(str(payload["display_name"]).strip() or username)
+    if payload.get("password"):
+        sets.append("password_hash = ?")
+        values.append(hash_password(str(payload["password"])))
+    if "role" in payload:
+        role = str(payload["role"])
+        if role not in {"student", "teacher"}:
+            raise HTTPException(status_code=400, detail="角色只能是 student 或 teacher。")
+        sets.append("role = ?")
+        values.append(role)
+    if not sets:
+        return {"ok": True}
+    values.append(username)
+    with get_db() as conn:
+        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE username = ?", values)
+    return {"ok": True}
+
+
+@app.delete("/api/users/{username}", dependencies=[Depends(require_teacher)])
+def delete_user(username: str):
+    if username in {"teacher_demo", "teacher"}:
+        raise HTTPException(status_code=400, detail="不能删除教师演示账号。")
+    with get_db() as conn:
+        row = conn.execute("SELECT role FROM users WHERE username = ?", (username,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="账号不存在。")
+        conn.execute("DELETE FROM users WHERE username = ?", (username,))
     return {"ok": True}
 
 

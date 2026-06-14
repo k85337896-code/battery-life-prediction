@@ -1,7 +1,7 @@
 import React from "react";
 import { Layout, Menu, Button, Typography } from "antd";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Activity, BatteryCharging, Database, Gauge, LogOut, ClipboardList } from "lucide-react";
+import { Activity, BatteryCharging, Database, Gauge, LogOut, ClipboardList, Users } from "lucide-react";
 import { AuthContext } from "../main";
 
 const { Sider, Header, Content } = Layout;
@@ -15,6 +15,7 @@ export default function AppLayout() {
     { key: "/datasets", icon: <Database size={18} />, label: "数据集管理" },
     { key: "/model", icon: <Activity size={18} />, label: auth.role === "teacher" ? "模型中心" : "模型展示" },
     { key: auth.role === "teacher" ? "/student-records" : "/history", icon: <ClipboardList size={18} />, label: auth.role === "teacher" ? "学生预测记录" : "我的预测记录" },
+    ...(auth.role === "teacher" ? [{ key: "/students", icon: <Users size={18} />, label: "学生信息管理" }] : []),
   ];
 
   return (

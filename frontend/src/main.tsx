@@ -10,6 +10,7 @@ import Datasets from "./pages/Datasets";
 import ModelInfo from "./pages/ModelInfo";
 import ModelManage from "./pages/ModelManage";
 import History from "./pages/History";
+import Students from "./pages/Students";
 import "./styles.css";
 
 export interface AuthState {
@@ -65,6 +66,7 @@ function Router() {
           <Route path="model-manage" element={<Guard teacherOnly><ModelManage /></Guard>} />
           <Route path="history" element={<History />} />
           <Route path="student-records" element={<Guard teacherOnly><History scope="all" /></Guard>} />
+          <Route path="students" element={<Guard teacherOnly><Students /></Guard>} />
           <Route path="dataset-manage" element={<Navigate to="/datasets" replace />} />
         </Route>
       </Routes>
