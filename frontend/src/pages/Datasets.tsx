@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Button, Card, Col, Descriptions, Drawer, Form, Input, InputNumber, message, Modal, Row, Space, Table, Tag, Tree, Upload } from "antd";
+import { Alert, Button, Card, Col, Descriptions, Drawer, Form, Input, InputNumber, message, Modal, Row, Select, Space, Table, Tag, Tree, Upload } from "antd";
 import { Database, Eye, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 import { api, apiError } from "../api/client";
 import { AuthContext } from "../main";
@@ -38,6 +38,7 @@ export default function Datasets() {
   const [items, setItems] = React.useState<DatasetItem[]>([]);
   const [keyword, setKeyword] = React.useState("");
   const [selectedKey, setSelectedKey] = React.useState<string>("");
+  const [chartDatasetKey, setChartDatasetKey] = React.useState<string>("");
   const [active, setActive] = React.useState<DatasetItem | null>(null);
   const [importOpen, setImportOpen] = React.useState(false);
   const [fileList, setFileList] = React.useState<any[]>([]);
@@ -69,11 +70,27 @@ export default function Datasets() {
   const datasetCount = new Set(items.map((item) => `${item.chemistry || ""}/${item.dataset_name || ""}`)).size;
   const chemistryCount = new Set(items.map((item) => item.chemistry || "未标注化学成分")).size;
   const eligibleCount = items.filter((item) => Number(item.training_eligible ?? 1) === 1).length;
-  const filteredEligibleCount = filtered.filter((item) => Number(item.training_eligible ?? 1) === 1).length;
-  const filteredExcludedCount = filtered.length - filteredEligibleCount;
-  const filteredLives = filtered.map((item) => Number(item.cycle_life)).filter(Number.isFinite);
-  const lifeRange = filteredLives.length ? `${Math.min(...filteredLives)} - ${Math.max(...filteredLives)} 圈` : "-";
-
+  const datasetOptions = React.useMemo(() => Array.from(
+    new Map(items.map((item) => {
+      const chemistry = item.chemistry || "未标注化学成分";
+      const dataset = item.dataset_name || "未命名数据集";
+      return [`${chemistry}::${dataset}`, { value: `${chemistry}::${dataset}`, label: `${chemistry} / ${dataset}` }];
+    })).values()
+  ), [items]);
+  React.useEffect(() => {
+    if (!chartDatasetKey && datasetOptions.length) {
+      setChartDatasetKey(String(datasetOptions[0].value));
+    } else if (chartDatasetKey && !datasetOptions.some((option) => option.value === chartDatasetKey)) {
+      setChartDatasetKey(datasetOptions.length ? String(datasetOptions[0].value) : "");
+    }
+  }, [chartDatasetKey, datasetOptions]);
+  const chartItems = chartDatasetKey
+    ? items.filter((item) => `${item.chemistry || "未标注化学成分"}::${item.dataset_name || "未命名数据集"}` === chartDatasetKey)
+    : [];
+  const chartEligibleCount = chartItems.filter((item) => Number(item.training_eligible ?? 1) === 1).length;
+  const chartExcludedCount = chartItems.length - chartEligibleCount;
+  const chartLives = chartItems.map((item) => Number(item.cycle_life)).filter(Number.isFinite);
+  const chartLifeRange = chartLives.length ? `${Math.min(...chartLives)} - ${Math.max(...chartLives)} 圈` : "-";
   async function importRealDataset() {
     const hide = message.loading("正在导入真实 Excel 数据集并重新训练模型，这可能需要几分钟...", 0);
     try {
@@ -136,18 +153,25 @@ export default function Datasets() {
       </section>
 
       <Card
-        title="全数据集衰减曲线"
+        title="数据集衰减曲线"
         className="controlPanel"
         extra={
           <Space>
-            <Tag color="blue">当前 {filtered.length} 块</Tag>
-            <Tag color="green">可靠EOL {filteredEligibleCount}</Tag>
-            <Tag color="orange">仅入库 {filteredExcludedCount}</Tag>
-            <Tag>寿命范围 {lifeRange}</Tag>
+            <Select
+              value={chartDatasetKey || undefined}
+              placeholder="选择数据集"
+              style={{ width: 320 }}
+              options={datasetOptions}
+              onChange={setChartDatasetKey}
+            />
+            <Tag color="blue">当前 {chartItems.length} 块</Tag>
+            <Tag color="green">可靠EOL {chartEligibleCount}</Tag>
+            <Tag color="orange">仅入库 {chartExcludedCount}</Tag>
+            <Tag>寿命范围 {chartLifeRange}</Tag>
           </Space>
         }
       >
-        <DatasetSohChart items={filtered} height={500} />
+        <DatasetSohChart items={chartItems} height={500} />
       </Card>
 
       <Row gutter={[18, 18]}>

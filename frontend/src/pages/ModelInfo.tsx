@@ -14,6 +14,7 @@ const modelOptions = [
 ];
 
 const metricValue = (value: unknown, suffix = "") => value === undefined || value === null ? "-" : `${value}${suffix}`;
+const metricWindow = (metrics: any) => metrics?.["主评估窗口"] || "前10%";
 
 export default function ModelInfo() {
   const { auth } = React.useContext(AuthContext);
@@ -79,8 +80,10 @@ export default function ModelInfo() {
     loadModels();
   }
 
-  const best = [...models].sort((a, b) => (b.metrics?.R2 ?? -999) - (a.metrics?.R2 ?? -999))[0] || {};
+  const bestCandidates = models.filter((item) => item.status === "published");
+  const best = [...(bestCandidates.length ? bestCandidates : models)].sort((a, b) => (b.metrics?.R2 ?? -999) - (a.metrics?.R2 ?? -999))[0] || {};
   const bestMetrics = best.metrics || {};
+  const bestWindow = metricWindow(bestMetrics);
   const chemistries = Array.from(new Set(datasets.map((item) => item.chemistry).filter(Boolean)));
   const datasetOptions = Array.from(new Set(datasets.filter((item) => !selectedChemistry || item.chemistry === selectedChemistry).map((item) => item.dataset_name).filter(Boolean))).map((value) => ({ value, label: value }));
 
@@ -119,13 +122,13 @@ export default function ModelInfo() {
         type="info"
         showIcon
         message="早期寿命预测难度说明"
-        description="当前评估是在整块电池留出的条件下，仅用前 10%/20%/30% 循环预测完整寿命。页面默认展示百分比误差，MAPE 表示平均绝对百分比误差，NRMSE 表示归一化均方根误差。早期 SOH 差异很小，误差偏大是任务本身的信息不足，不代表系统故障。"
+        description={`顶部最佳模型和表格主 MAPE/NRMSE/R² 使用主评估窗口 ${bestWindow}，下方“窗口误差”同时列出前10%、前20%、前30%。误差偏大的主要原因是早期 SOH 差异很小，只看前几十圈预测完整寿命属于强外推；NCA/NCM 等公开数据还存在倍率、工况、寿命截断和样本分布差异，百分比误差会被明显放大，不代表系统故障。`}
       />
 
       <Row gutter={16}>
         <Col span={8}><Card><Statistic title="最佳模型" value={best.model_type || "-"} /></Card></Col>
-        <Col span={8}><Card><Statistic title="MAPE（百分比）" value={bestMetrics.MAPE || 0} precision={2} suffix="%" /></Card></Col>
-        <Col span={8}><Card><Statistic title="NRMSE（百分比）" value={bestMetrics.NRMSE || 0} precision={2} suffix="%" /></Card></Col>
+        <Col span={8}><Card><Statistic title={`MAPE（${bestWindow}）`} value={bestMetrics.MAPE || 0} precision={2} suffix="%" /></Card></Col>
+        <Col span={8}><Card><Statistic title={`NRMSE（${bestWindow}）`} value={bestMetrics.NRMSE || 0} precision={2} suffix="%" /></Card></Col>
       </Row>
 
       <Card title="已训练模型">
@@ -140,9 +143,10 @@ export default function ModelInfo() {
             { title: "训练规模", dataIndex: "training_data_size" },
             { title: "候选样本", render: (_, record) => <Tag>{record.metrics?.["候选样本"] ?? record.training_data_size}</Tag> },
             { title: "排除样本", render: (_, record) => <Tag color={(record.metrics?.["排除样本"] ?? 0) ? "orange" : "green"}>{record.metrics?.["排除样本"] ?? 0}</Tag> },
-            { title: "MAPE", render: (_, record) => <Tag color="cyan">{metricValue(record.metrics?.MAPE, "%")}</Tag> },
-            { title: "NRMSE", render: (_, record) => <Tag color="purple">{metricValue(record.metrics?.NRMSE, "%")}</Tag> },
-            { title: "R²", render: (_, record) => <Tag color={(record.metrics?.R2 ?? 0) >= 0 ? "green" : "orange"}>{record.metrics?.R2}</Tag> },
+            { title: "主窗口", render: (_, record) => <Tag>{metricWindow(record.metrics)}</Tag> },
+            { title: "MAPE（主窗口）", render: (_, record) => <Tag color="cyan">{metricValue(record.metrics?.MAPE, "%")}</Tag> },
+            { title: "NRMSE（主窗口）", render: (_, record) => <Tag color="purple">{metricValue(record.metrics?.NRMSE, "%")}</Tag> },
+            { title: "R²（主窗口）", render: (_, record) => <Tag color={(record.metrics?.R2 ?? 0) >= 0 ? "green" : "orange"}>{record.metrics?.R2}</Tag> },
             {
               title: "窗口误差",
               render: (_, record) => (
@@ -184,6 +188,7 @@ export default function ModelInfo() {
                   <Descriptions.Item label="训练样本">{info.training_data_size} 条电池记录</Descriptions.Item>
                   <Descriptions.Item label="样本筛选">{info.metrics?.["训练样本筛选"] || "未记录"}</Descriptions.Item>
                   <Descriptions.Item label="早期预测窗口">{info.metrics?.["观测窗口"] || "未记录"}</Descriptions.Item>
+                  <Descriptions.Item label="主评估窗口">{metricWindow(info.metrics)}</Descriptions.Item>
                   <Descriptions.Item label="窗口评估">
                     <Space>
                       {["前10%", "前20%", "前30%"].map((key) => (
@@ -203,7 +208,8 @@ export default function ModelInfo() {
                     </Space>
                   </Descriptions.Item>
                   <Descriptions.Item label="划分方式">{info.metrics?.["评估方式"] || "未记录"}</Descriptions.Item>
-                  <Descriptions.Item label="误差口径">页面展示百分比误差：MAPE 为平均绝对百分比误差，NRMSE 为 RMSE 按平均寿命归一化后的百分比。</Descriptions.Item>
+                  <Descriptions.Item label="误差口径">页面主指标来自主评估窗口；MAPE 为平均绝对百分比误差，NRMSE 为 RMSE 按平均寿命归一化后的百分比。</Descriptions.Item>
+                  <Descriptions.Item label="误差偏大原因">{info.metrics?.["误差解释"] || "早期 SOH 信息量有限，预测完整寿命属于强外推。"}</Descriptions.Item>
                   <Descriptions.Item label="模型精度">
                     <Space>
                       <Tag>MAPE {metricValue(info.metrics?.MAPE, "%")}</Tag>

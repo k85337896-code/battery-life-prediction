@@ -105,18 +105,21 @@ def train_model(params=None, model_key="xgboost"):
             clean_params[key] = value
     params = {**MODEL_DEFAULTS[base_model_key], **clean_params}
     with get_db() as conn:
-        all_rows = conn.execute("SELECT * FROM battery_dataset").fetchall()
         columns = [row["name"] for row in conn.execute("PRAGMA table_info(battery_dataset)").fetchall()]
-        filters = ["training_eligible = 1"] if "training_eligible" in columns else ["1 = 1"]
+        source_filters = ["1 = 1"]
         values = []
         if chemistry:
-            filters.append("chemistry = ?")
+            source_filters.append("chemistry = ?")
             values.append(chemistry)
         if dataset_ids:
             placeholders = ",".join("?" for _ in dataset_ids)
-            filters.append(f"dataset_name IN ({placeholders})")
+            source_filters.append(f"dataset_name IN ({placeholders})")
             values.extend(dataset_ids)
-        rows = conn.execute(f"SELECT * FROM battery_dataset WHERE {' AND '.join(filters)}", values).fetchall()
+        candidate_rows = conn.execute(f"SELECT * FROM battery_dataset WHERE {' AND '.join(source_filters)}", values).fetchall()
+        training_filters = list(source_filters)
+        if "training_eligible" in columns:
+            training_filters.append("training_eligible = 1")
+        rows = conn.execute(f"SELECT * FROM battery_dataset WHERE {' AND '.join(training_filters)}", values).fetchall()
         if rows:
             chemistry = chemistry or (row_to_dict(rows[0]).get("chemistry") or "")
         version_row = conn.execute(
@@ -197,21 +200,31 @@ def train_model(params=None, model_key="xgboost"):
         train_mask = np.isin(groups_array, train_groups)
         test_mask = np.isin(groups_array, test_groups)
         model.fit(x_array[train_mask], y_array[train_mask])
-        pred = model.predict(x_array[test_mask])
-        eval_y = y_array[test_mask]
+        for window_fraction in EVAL_PREFIX_FRACTIONS:
+            eval_mask = test_mask & (np.abs(prefix_tags_array - window_fraction) < 1e-9)
+            window_pred = model.predict(x_array[eval_mask])
+            window_eval_y = y_array[eval_mask]
+            window_metrics[f"前{int(window_fraction * 100)}%"] = _regression_metrics(window_eval_y, window_pred)
+            if abs(window_fraction - eval_prefix_fraction) < 1e-9:
+                primary_pred = window_pred
+                primary_eval_y = window_eval_y
+        pred = primary_pred if primary_pred is not None else window_pred
+        eval_y = primary_eval_y if primary_eval_y is not None else window_eval_y
     model.fit(x_array, y_array)
     accuracy_metrics = _regression_metrics(eval_y, pred)
     metrics = {
         **accuracy_metrics,
         "评估方式": "留一交叉验证" if len(records) <= 40 else "随机测试集",
-        "候选样本": len(all_rows),
+        "主评估窗口": f"前{int(eval_prefix_fraction * 100)}%",
+        "候选样本": len(candidate_rows),
         "可靠EOL样本": len(records),
         "前缀训练样本": len(x_array),
-        "排除样本": max(len(all_rows) - len(records), 0),
+        "排除样本": max(len(candidate_rows) - len(records), 0),
         "训练样本筛选": "完整寿命曲线生成早期前缀样本，仅使用可靠 EOL 标签",
-        "观测窗口": f"训练前缀 5%-30%，留一评估使用前 {int(eval_prefix_fraction * 100)}%",
+        "观测窗口": f"训练前缀 5%-30%，主指标使用前 {int(eval_prefix_fraction * 100)}%",
         "窗口评估": window_metrics,
         "误差口径": "RMSE/MAE 为循环数误差；MAPE/NRMSE 为百分比误差",
+        "误差解释": "早期 10% SOH 信息量有限，跨数据集工况差异和未达到 EOL 的截断样本会显著放大外推误差。",
         "预测不确定性": f"默认 ±{round(accuracy_metrics['RMSE'])} 圈",
         "扩展特征": "已使用电压/电流特征；温度/内阻原始数据未提供" ,
     }
