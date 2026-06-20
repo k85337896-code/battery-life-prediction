@@ -89,6 +89,50 @@ def _rescale_future_curve(input_curve, matched_curve, matched_life, predicted_li
     return sorted(result, key=lambda point: point["cycle"])
 
 
+def _enforce_future_monotonic_curve(curve, current_cycle, rated_capacity):
+    """Keep the observed prefix unchanged and project the future SOH to non-increasing decay."""
+    result = []
+    running_soh = None
+    for point in sorted(curve, key=lambda item: item["cycle"]):
+        next_point = dict(point)
+        soh = float(next_point["soh"])
+        if next_point["cycle"] <= current_cycle:
+            running_soh = soh
+        else:
+            if running_soh is None:
+                running_soh = soh
+            running_soh = max(min(running_soh, soh), 0.0)
+            next_point["soh"] = round(running_soh, 4)
+            next_point["specific_capacity"] = round(float(rated_capacity) * running_soh / 100, 4)
+        result.append(next_point)
+    return result
+
+
+def _enforce_future_monotonic_band(soh_curve, current_cycle):
+    result = []
+    previous_lower = None
+    previous_upper = None
+    for point in sorted(soh_curve, key=lambda item: item["cycle"]):
+        next_point = dict(point)
+        soh = float(next_point["soh"])
+        lower = min(float(next_point["lower"]), soh)
+        upper = max(float(next_point["upper"]), soh)
+        if next_point["cycle"] <= current_cycle:
+            lower = upper = soh
+        else:
+            if previous_lower is not None:
+                lower = min(previous_lower, lower)
+            if previous_upper is not None:
+                upper = min(previous_upper, upper)
+            upper = max(upper, soh)
+        next_point["lower"] = round(lower, 4)
+        next_point["upper"] = round(upper, 4)
+        previous_lower = next_point["lower"]
+        previous_upper = next_point["upper"]
+        result.append(next_point)
+    return result
+
+
 def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rate, curve, model_key="xgboost", username="student_demo", extra_features=None, chemistry=None):
     warnings = []
     if len(curve) < 50:
@@ -161,6 +205,7 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
         prediction_uncertainty = max(30, int(abs(best["cycle_life"] - predicted_cycle_life) * 0.5))
     prediction_uncertainty = int(round(float(prediction_uncertainty)))
     predicted_curve = _rescale_future_curve(curve, best["capacity_curve"], best["cycle_life"], predicted_cycle_life, rated_capacity)
+    predicted_curve = _enforce_future_monotonic_curve(predicted_curve, current_cycle, rated_capacity)
     if best_score < 0.55:
         warnings.append("上传数据与训练分布差异较大，请谨慎参考预测结果。")
     lower_life = max(predicted_cycle_life - prediction_uncertainty, current_cycle)
@@ -176,6 +221,7 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
             lower = max(point["soh"] - width * progress, 0)
             upper = min(point["soh"] + width * progress, 120)
         soh_curve.append({"cycle": cycle, "soh": round(point["soh"], 4), "lower": round(lower, 4), "upper": round(upper, 4)})
+    soh_curve = _enforce_future_monotonic_band(soh_curve, current_cycle)
     model_name = model_row["model_type"]
 
     result = {

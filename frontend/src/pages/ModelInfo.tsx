@@ -210,6 +210,7 @@ export default function ModelInfo() {
                   <Descriptions.Item label="划分方式">{info.metrics?.["评估方式"] || "未记录"}</Descriptions.Item>
                   <Descriptions.Item label="误差口径">页面主指标来自主评估窗口；MAPE 为平均绝对百分比误差，NRMSE 为 RMSE 按平均寿命归一化后的百分比。</Descriptions.Item>
                   <Descriptions.Item label="误差偏大原因">{info.metrics?.["误差解释"] || "早期 SOH 信息量有限，预测完整寿命属于强外推。"}</Descriptions.Item>
+                  <Descriptions.Item label="单调性约束">{info.metrics?.["单调性约束"] || "未来 SOH 曲线输出约束为不随循环数上升。"}</Descriptions.Item>
                   <Descriptions.Item label="模型精度">
                     <Space>
                       <Tag>MAPE {metricValue(info.metrics?.MAPE, "%")}</Tag>

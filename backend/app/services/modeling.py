@@ -48,11 +48,38 @@ MODEL_PARAM_KEYS = {
 }
 
 
-def _build_model(model_key: str, params: dict):
+def _monotone_constraints_for_features(feature_names):
+    positive_features = {
+        "observed_cycles",
+        "initial_capacity",
+        "latest_capacity",
+        "retention",
+        "early_slope",
+        "early_capacity_slope",
+    }
+    negative_features = {
+        "c_rate",
+        "internal_resistance_proxy",
+    }
+    constraints = []
+    for name in feature_names or []:
+        if name in positive_features or name.startswith("seq_soh_"):
+            constraints.append(1)
+        elif name in negative_features:
+            constraints.append(-1)
+        else:
+            constraints.append(0)
+    return tuple(constraints)
+
+
+def _build_model(model_key: str, params: dict, feature_names=None):
     if model_key == "xgboost":
         from xgboost import XGBRegressor
 
-        return XGBRegressor(objective="reg:squarederror", **params)
+        xgb_params = dict(params)
+        if feature_names and "monotone_constraints" not in xgb_params:
+            xgb_params["monotone_constraints"] = _monotone_constraints_for_features(feature_names)
+        return XGBRegressor(objective="reg:squarederror", **xgb_params)
     if model_key in {"lstm", "tcn", "cnn"}:
         # 演示系统不引入庞大的深度学习运行时，使用多层感知机拟合早期序列特征。
         # UI 中保留 LSTM/TCN/CNN 名称，用于表达模型思路与答辩对比。
@@ -170,7 +197,7 @@ def train_model(params=None, model_key="xgboost"):
     y_array = np.array(y, dtype=float)
     groups_array = np.array(groups)
     prefix_tags_array = np.array(prefix_tags, dtype=float)
-    model = _build_model(base_model_key, params)
+    model = _build_model(base_model_key, params, feature_names)
     window_metrics = {}
     primary_pred = None
     primary_eval_y = None
@@ -180,7 +207,7 @@ def train_model(params=None, model_key="xgboost"):
             predictions = []
             eval_y_values = []
             for train_index, test_index in LeaveOneGroupOut().split(x_array, y_array, groups_array):
-                fold_model = _build_model(base_model_key, params)
+                fold_model = _build_model(base_model_key, params, feature_names)
                 fold_model.fit(x_array[train_index], y_array[train_index])
                 eval_candidates = [index for index in test_index if abs(prefix_tags_array[index] - window_fraction) < 1e-9]
                 eval_index = eval_candidates[0] if eval_candidates else test_index[0]
@@ -225,6 +252,7 @@ def train_model(params=None, model_key="xgboost"):
         "窗口评估": window_metrics,
         "误差口径": "RMSE/MAE 为循环数误差；MAPE/NRMSE 为百分比误差",
         "误差解释": "早期 10% SOH 信息量有限，跨数据集工况差异和未达到 EOL 的截断样本会显著放大外推误差。",
+        "单调性约束": "XGBoost 寿命回归使用特征单调约束；所有模型预测的未来 SOH 曲线统一约束为不随循环数上升。",
         "预测不确定性": f"默认 ±{round(accuracy_metrics['RMSE'])} 圈",
         "扩展特征": "已使用电压/电流特征；温度/内阻原始数据未提供" ,
     }
@@ -239,6 +267,10 @@ def train_model(params=None, model_key="xgboost"):
             "training_mode": "full_curve_prefix_transfer",
             "prefix_fractions": PREFIX_FRACTIONS,
             "uncertainty_cycles": round(accuracy_metrics["RMSE"]),
+            "monotonicity": {
+                "future_soh_curve": "non_increasing",
+                "xgboost_feature_constraints": _monotone_constraints_for_features(feature_names) if base_model_key == "xgboost" else (),
+            },
         },
         model_path(unique_model_key),
     )
