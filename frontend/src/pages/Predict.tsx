@@ -147,8 +147,8 @@ export default function Predict() {
               className="sohPanel"
               type="warning"
               showIcon
-              message={`预测寿命约 ${result.predicted_cycle_life} ± ${result.prediction_uncertainty_cycles} 圈`}
-              description={`参考区间：${result.predicted_life_lower} - ${result.predicted_life_upper} 圈。早期循环信息有限，该区间来自当前模型留一评估误差。`}
+              message={`预测到 80% EOL 约 ${result.predicted_cycle_life} ± ${result.prediction_uncertainty_cycles} 圈`}
+              description={`参考区间：${result.predicted_life_lower} - ${result.predicted_life_upper} 圈。曲线只展示到 80% SOH，低于该阈值按电池损坏处理。`}
             />
           )}
 

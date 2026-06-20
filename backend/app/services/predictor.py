@@ -133,6 +133,57 @@ def _enforce_future_monotonic_band(soh_curve, current_cycle):
     return result
 
 
+def _truncate_or_extend_curve_to_eol(curve, predicted_life, rated_capacity, eol=EOL_SOH):
+    sorted_curve = sorted(curve, key=lambda point: point["cycle"])
+    if not sorted_curve:
+        return [], 0.0
+
+    result = []
+    previous = None
+    for point in sorted_curve:
+        current = dict(point)
+        current_soh = float(current["soh"])
+        if current_soh <= eol:
+            if previous is None:
+                eol_cycle = float(current["cycle"])
+            else:
+                previous_soh = float(previous["soh"])
+                previous_cycle = float(previous["cycle"])
+                current_cycle = float(current["cycle"])
+                if previous_soh <= eol or abs(previous_soh - current_soh) < 1e-9:
+                    eol_cycle = previous_cycle
+                else:
+                    ratio = (previous_soh - eol) / (previous_soh - current_soh)
+                    eol_cycle = previous_cycle + ratio * (current_cycle - previous_cycle)
+            result.append(
+                {
+                    "cycle": round(eol_cycle, 4),
+                    "specific_capacity": round(float(rated_capacity) * eol / 100, 4),
+                    "soh": round(float(eol), 4),
+                }
+            )
+            return result, eol_cycle
+        result.append(current)
+        previous = current
+
+    eol_cycle = max(float(predicted_life), float(sorted_curve[-1]["cycle"]))
+    if float(result[-1]["cycle"]) < eol_cycle:
+        result.append(
+            {
+                "cycle": round(eol_cycle, 4),
+                "specific_capacity": round(float(rated_capacity) * eol / 100, 4),
+                "soh": round(float(eol), 4),
+            }
+        )
+    elif float(result[-1]["soh"]) > eol:
+        result[-1] = {
+            "cycle": round(eol_cycle, 4),
+            "specific_capacity": round(float(rated_capacity) * eol / 100, 4),
+            "soh": round(float(eol), 4),
+        }
+    return result, eol_cycle
+
+
 def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rate, curve, model_key="xgboost", username="student_demo", extra_features=None, chemistry=None):
     warnings = []
     if len(curve) < 50:
@@ -199,17 +250,24 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
     except Exception:
         model_prediction = None
 
-    predicted_cycle_life = int(max(model_prediction or best["cycle_life"], current_cycle))
-    remaining_life = max(int(predicted_cycle_life - current_cycle), 0)
+    raw_predicted_cycle_life = int(max(model_prediction or best["cycle_life"], current_cycle))
     if prediction_uncertainty is None:
-        prediction_uncertainty = max(30, int(abs(best["cycle_life"] - predicted_cycle_life) * 0.5))
+        prediction_uncertainty = max(30, int(abs(best["cycle_life"] - raw_predicted_cycle_life) * 0.5))
     prediction_uncertainty = int(round(float(prediction_uncertainty)))
-    predicted_curve = _rescale_future_curve(curve, best["capacity_curve"], best["cycle_life"], predicted_cycle_life, rated_capacity)
+    predicted_curve = _rescale_future_curve(curve, best["capacity_curve"], best["cycle_life"], raw_predicted_cycle_life, rated_capacity)
     predicted_curve = _enforce_future_monotonic_curve(predicted_curve, current_cycle, rated_capacity)
+    predicted_curve, eol_cycle = _truncate_or_extend_curve_to_eol(predicted_curve, raw_predicted_cycle_life, rated_capacity, EOL_SOH)
+    predicted_cycle_life = int(round(eol_cycle))
+    remaining_life = max(int(round(eol_cycle - current_cycle)), 0)
+    if current_soh <= EOL_SOH:
+        warnings.append("当前 SOH 已低于 80%，电池已达到失效阈值。")
     if best_score < 0.55:
         warnings.append("上传数据与训练分布差异较大，请谨慎参考预测结果。")
-    lower_life = max(predicted_cycle_life - prediction_uncertainty, current_cycle)
-    upper_life = predicted_cycle_life + prediction_uncertainty
+    if remaining_life == 0:
+        lower_life = upper_life = predicted_cycle_life
+    else:
+        lower_life = max(predicted_cycle_life - prediction_uncertainty, current_cycle)
+        upper_life = predicted_cycle_life + prediction_uncertainty
     soh_curve = []
     for point in predicted_curve:
         cycle = point["cycle"]
@@ -220,6 +278,10 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
             progress = (cycle - current_cycle) / max(predicted_cycle_life - current_cycle, 1)
             lower = max(point["soh"] - width * progress, 0)
             upper = min(point["soh"] + width * progress, 120)
+            lower = max(lower, EOL_SOH)
+            upper = max(upper, EOL_SOH)
+            if point["soh"] <= EOL_SOH + 1e-9:
+                lower = upper = EOL_SOH
         soh_curve.append({"cycle": cycle, "soh": round(point["soh"], 4), "lower": round(lower, 4), "upper": round(upper, 4)})
     soh_curve = _enforce_future_monotonic_band(soh_curve, current_cycle)
     model_name = model_row["model_type"]
