@@ -72,9 +72,10 @@ def timeseries_to_curve(df: pd.DataFrame, rated_capacity_ah: float):
                 capacity = float(np.trapz(np.abs(current_a), time_s) / 3600.0)
         capacity_by_cycle[int(cycle)] = capacity
 
-    positive = [value for value in capacity_by_cycle.values() if value > 0]
-    baseline = float(np.median(positive[: min(5, len(positive))])) if positive else rated_capacity_ah
-    baseline = baseline or rated_capacity_ah
+    # Prediction uploads must be evaluated against the user-provided rated
+    # capacity. Re-normalizing by the first few cycles would hide already
+    # degraded cells by turning their first low-capacity cycle back into 100%.
+    baseline = rated_capacity_ah
     for cycle in sorted(capacity_by_cycle):
         capacity = capacity_by_cycle[cycle]
         soh = capacity / baseline * 100 if baseline else 0

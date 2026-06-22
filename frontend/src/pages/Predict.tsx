@@ -133,8 +133,8 @@ export default function Predict() {
               <Tag color="green">Top-1 匹配</Tag>
             </Card>
             <Card className="resultCard">
-              <Statistic title={result?.selected_model_name || "模型直接预测"} value={result?.model_predicted_life ?? "-"} suffix={result?.model_predicted_life ? "次" : ""} />
-              <Tag color="purple">ML 对照结果</Tag>
+              <Statistic title="规则校正后预测" value={result?.model_predicted_life ?? "-"} suffix={result?.model_predicted_life ? "次" : ""} />
+              <Tag color="purple">{result?.selected_model_name || "模型输出"}</Tag>
             </Card>
           </div>
 

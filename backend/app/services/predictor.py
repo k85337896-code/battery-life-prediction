@@ -9,6 +9,10 @@ from ..utils import row_to_dict, rows_to_dicts
 from .features import extract_features
 
 
+MAX_REASONABLE_EOL_CYCLE = 3000
+LIFE_CAP_MULTIPLIER = 1.25
+
+
 def _normalized_soh(curve, grid_size=120):
     cycles = np.array([p["cycle"] for p in curve], dtype=float)
     soh = np.array([p["soh"] for p in curve], dtype=float)
@@ -184,6 +188,30 @@ def _truncate_or_extend_curve_to_eol(curve, predicted_life, rated_capacity, eol=
     return result, eol_cycle
 
 
+def _observed_eol_cycle(curve, eol=EOL_SOH):
+    previous = None
+    for point in sorted(curve, key=lambda item: item["cycle"]):
+        soh = float(point["soh"])
+        if soh <= eol:
+            if previous is None:
+                return float(point["cycle"])
+            previous_soh = float(previous["soh"])
+            if previous_soh <= eol or abs(previous_soh - soh) < 1e-9:
+                return float(previous["cycle"])
+            ratio = (previous_soh - eol) / (previous_soh - soh)
+            return float(previous["cycle"]) + ratio * (float(point["cycle"]) - float(previous["cycle"]))
+        previous = point
+    return None
+
+
+def _reasonable_life_cap(records, current_cycle):
+    lives = [float(item.get("cycle_life", 0)) for item in records if float(item.get("cycle_life", 0) or 0) > 0]
+    if not lives:
+        return max(float(current_cycle), float(MAX_REASONABLE_EOL_CYCLE))
+    dataset_cap = max(lives) * LIFE_CAP_MULTIPLIER
+    return max(float(current_cycle), min(float(MAX_REASONABLE_EOL_CYCLE), dataset_cap))
+
+
 def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rate, curve, model_key="xgboost", username="student_demo", extra_features=None, chemistry=None):
     warnings = []
     if len(curve) < 50:
@@ -209,9 +237,9 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
     if not model_row:
         raise ValueError("所选模型不存在或尚未发布，请选择教师已发布的模型。")
 
+    dataset_records = [row_to_dict(row) for row in rows]
     ranked = []
-    for row in rows:
-        item = row_to_dict(row)
+    for item in dataset_records:
         score = _prefix_match_score(curve, item["capacity_curve"])
         ranked.append((score, item))
     ranked.sort(key=lambda pair: pair[0], reverse=True)
@@ -236,7 +264,9 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
     current_cycle = max(point["cycle"] for point in curve)
     current_soh = curve[-1]["soh"]
     model_prediction = None
+    raw_model_prediction = None
     prediction_uncertainty = None
+    observed_eol_cycle = _observed_eol_cycle(curve, EOL_SOH)
     try:
         import joblib
 
@@ -245,10 +275,21 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
             model_payload = joblib.load(path)
             feature_names = model_payload["feature_names"]
             features = extract_features(battery_type, theoretical_capacity, rated_capacity, c_rate, curve, extra_features)
-            model_prediction = round(float(model_payload["model"].predict([[features[name] for name in feature_names]])[0]), 0)
+            raw_model_prediction = round(float(model_payload["model"].predict([[features[name] for name in feature_names]])[0]), 0)
+            model_prediction = raw_model_prediction
             prediction_uncertainty = model_payload.get("uncertainty_cycles")
     except Exception:
         model_prediction = None
+
+    life_cap = _reasonable_life_cap(dataset_records, current_cycle)
+    if observed_eol_cycle is not None:
+        model_prediction = round(float(observed_eol_cycle), 0)
+        warnings.append("输入曲线已达到 80% EOL，按实测交点判定电池失效，不再采用模型外推寿命。")
+    elif model_prediction is not None and model_prediction > life_cap:
+        warnings.append(
+            f"模型原始预测 {int(model_prediction)} 圈超出当前数据集合理范围，已按 {int(life_cap)} 圈上限校正。"
+        )
+        model_prediction = life_cap
 
     raw_predicted_cycle_life = int(max(model_prediction or best["cycle_life"], current_cycle))
     if prediction_uncertainty is None:
@@ -305,6 +346,7 @@ def predict_from_curve(battery_type, theoretical_capacity, rated_capacity, c_rat
         "selected_model_name": model_name,
         "model_name": model_name,
         "model_predicted_life": model_prediction,
+        "raw_model_predicted_life": raw_model_prediction,
         "xgb_predicted_life": model_prediction if model_key == "xgboost" else None,
         "warnings": warnings,
     }
